@@ -718,7 +718,10 @@ function RAT:Spawn(naircraft)
     dt=math.max(dt, 180)
   end
   local Tstop=Tstart+dt*(self.ngroups-1)
-  SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
+  
+  if self.ngroups>0 then
+    SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
+  end
   
   -- Status check and report scheduler.
   SCHEDULER:New(nil, self.Status, {self}, Tstart+1, self.statusinterval)
@@ -4309,4 +4312,175 @@ function RAT:_ATCQueue()
     
   end
 end
+
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- @module Ratmanager
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--- RATMANAGER class
+-- @field #string ClassName Name of the Class.
+-- @field #table rat Array holding RAT objects etc.
+-- @field #rable min Array holding the minimum number of groups present for each RAT object.
+-- @field #rable max Array holding the maximum number of groups present for each RAT object.
+-- @field #number nrat Number of RAT objects.
+-- @extends Core.Spawn#SPAWN
+
+---# RATMANAGER class, extends @{Spawn#SPAWN}
+-- The RAT class implements an easy to use way to randomly fill your map with AI aircraft.
+--
+-- @field #RATMANAGER
+RATMANAGER={
+  ClassName="RATMANAGER",
+  rat={},
+  min={},
+  max={},
+  name={},
+  alive={},
+  nrat=0,
+}
+
+--- Creates a new RATMANAGER object.
+-- @param #RATMANAGER self
+-- @return #RATMANAGER RATMANAGER object
+function RATMANAGER:New()
+
+  --local self=BASE:Inherit(self, FSM:New()) -- #RATMANAGER
+  local self=BASE:Inherit(self, BASE:New()) -- #RATMANAGER
+  
+  return self
+end
+
+
+--- Adds a RAT object to the RAT manager. Min/Max values specifies the limits how many RAT groups are alive.
+-- @param #RATMANAGER self
+-- @param #RAT ratobject
+-- @param #number min Minimum number of RAT objects that will be spawned.
+-- @param #number max Maximum number of RAT objects that will be spawned.
+function RATMANAGER:Add(ratobject, min, max)
+
+  --Automatic respawning is disabled.
+  ratobject.norespawn=true
+  
+  self.nrat=self.nrat+1
+  
+  --self.rat[#self.rat+1]={}
+  self.rat[self.nrat]=ratobject
+  self.alive[self.nrat]=0
+  self.name[self.nrat]=ratobject.alias
+  self.min[self.nrat]=min
+  self.max[self.nrat]=max
+  
+  ratobject:Spawn(0)
+end
+
+--- Counts the number of alive RAT objects.
+-- @param #RATMANAGER self
+function RATMANAGER:_Count()
+  local ntotal=0
+  
+  -- Loop over all RAT objects.
+  for i=1,self.nrat do
+    local n=0
+    
+    local ratobject=self.rat --#RAT
+    
+    -- Loop over the RAT groups of this object.
+    for spawnindex,ratcraft in pairs(ratobject.ratcraft) do
+      local group=ratcraft.group --Wrapper.Group#GROUP
+      if group:IsAlive() then
+       n=n+1
+      end
+    end
+    
+    -- Alive groups of this RAT object.
+    self.alive[i]=n
+    
+    -- Grand total.
+    ntotal=ntotal+n
+    
+    -- Some output
+    local text=string.format("Number of groups for %s = %d", self.name[i], n)
+    env.info(text)    
+  end
+  
+  -- Return grand total.
+  return ntotal
+end
+
+--- Creates a new RATMANAGER object.
+-- @param #RATMANAGER self
+function RATMANAGER:_Manage()
+  local ntot=self:_Count()
+  
+end
+
+--- Rolls the dice for the number of necessary spawns.
+-- @param #RATMANAGER self
+-- @param #number nrat Number of RAT objects.
+-- @param #table min Minimum active number of groups for each RAT object.
+-- @param #table max Maximum active number of groups for each RAT object.
+function RATMANAGER:_RollDice(nrat,min,max)
+
+  -- Table
+  local N={}
+
+  --- Function calculating the sum of an array.
+  -- @param #table A Array.
+  -- @param #number n Lower index of sum.
+  -- @param #number m Upper index of sum.
+  -- @return summe Sum of elements.
+  local function sum(A,n,m)
+    local summe=0
+    for i=n,m do
+      summe=summe+A[i]
+    end
+    return summe
+  end
+  
+  local ntot=sum(max, 1, #max)
+  
+  for i=1,nrat do
+    N[#N+1]=0
+  end
+  
+  --math.randomseed(os.time())
+  
+  for i=1,nrat do
+
+    local maxi=math.min(max[i], ntot-sum(N, 1, i-1)-sum(min, i+1, nrat))
+    
+    if maxi >= min[i] then
+      N[i]=math.random(min[i], maxi)
+    else
+      N[i]=0
+    end
+    
+    env.info(string.format("FF i=%d, min=%d, max=%d, N=%d", i, min[i], maxi, N[i]))
+  end
+  
+  -- last one (determined by ntot and already distributed ones)
+  --N[nrat]=ntot-sum(N, 1, nrat-1)
+ -- env.info(string.format("FF i=%d, min=%d, max=%d, N=%d", nrat, min[nrat], ntot-sum(N, 1, nrat-1), N[nrat]))
+  
+  env.info(string.format("FF sum = %d", sum(N, 1, nrat)))
+
+  return N
+end
+
+--- Starts the RAT manager and spawns the RAT objects.
+-- @param #RATMANAGER self
+function RATMANAGER:Start()
+
+  -- init number of spawns
+  local N=self:_RollDice(self.nrat, self.min, self.max)
+  
+  
+  for i=1,self.nrat do
+    for j=1,N[i] do
+      self.rat[i]:_SpawnWithRoute()
+      --SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
+    end
+  end
+  
+end
+
