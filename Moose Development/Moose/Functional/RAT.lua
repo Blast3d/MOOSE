@@ -133,6 +133,10 @@
 -- @field #number frequency Radio frequency used by the RAT groups.
 -- @field #string modulation Ratio modulation. Either "FM" or "AM".
 -- @field #boolean uncontrolled If true aircraft are spawned in uncontrolled state and will only sit on their parking spots.
+-- @field #number activate_delay Delay in seconds before first uncontrolled group is activated. Default is 5 seconds.
+-- @field #number activate_delta Time interval in seconds between activation of uncontrolled groups. Default is 5 seconds.
+-- @field #number activate_frand Randomization factor of time interval (activate_delta) between activating uncontrolled groups. Default is 0.
+-- @field #number activate_max=0 Maximal number of uncontrolle aircraft, which will be activated at a time. Default is 0 
 -- @field #string onboardnum Sets the onboard number prefix. Same as setting "TAIL #" in the mission editor.
 -- @field #number onboardnum0 (Optional) Starting value of the automatically appended numbering of aircraft within a flight. Default is one.
 -- @extends Core.Spawn#SPAWN
@@ -355,6 +359,10 @@ RAT={
   modulation=nil,           -- Ratio modulation. Either "FM" or "AM".
   actype=nil,               -- Aircraft type set by user. Changes the type of the template group.
   uncontrolled=false,       -- Spawn uncontrolled aircraft.
+  activate_delay=5,         -- Delay in seconds before first uncontrolled group is activated.
+  activate_delta=5,         -- Time interval in seconds between activation of uncontrolled groups.
+  activate_frand=0,         -- Randomization factor of time interval (activate_delta) between activating uncontrolled groups.
+  activate_max=0,           -- Max number of uncontrolle aircraft, which will be activated at a time. 
   onboardnum=nil,           -- Tail number.
   onboardnum0=1,            -- (Optional) Starting value of the automatically appended numbering of aircraft within a flight. Default is one.
 }
@@ -472,7 +480,7 @@ RAT.id="RAT | "
 --- RAT version.
 -- @field #list
 RAT.version={
-  version = "2.1.0",
+  version = "2.2.0",
   print = true,
 }
 
@@ -509,7 +517,7 @@ RAT.version={
 --DONE: Handle the case where more than 10 RAT objects are spawned. Likewise, more than 10 groups of one object. Causes problems with the number of menu items! ==> not now!
 --DONE: Add custom livery choice if possible.
 --TODO: When only a destination is set, it should be checked that the departure is within range. Also, that departure and destination are not the same.
---TODO: Add function to include all airports to selected destinations/departures.
+--DONE: Add function to include all airports to selected destinations/departures.
 --DONE: Find way to respawn aircraft at same position where the last was despawned for commute and journey.
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -718,11 +726,7 @@ function RAT:Spawn(naircraft)
     dt=math.max(dt, 180)
   end
   local Tstop=Tstart+dt*(self.ngroups-1)
-  
-  if self.ngroups>0 then
-    SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
-  end
-  
+    
   -- Status check and report scheduler.
   SCHEDULER:New(nil, self.Status, {self}, Tstart+1, self.statusinterval)
   
@@ -735,10 +739,64 @@ function RAT:Spawn(naircraft)
   self:HandleEvent(EVENTS.Dead,           self._OnDead)
   self:HandleEvent(EVENTS.Crash,          self._OnCrash)
   -- TODO: add hit event?
+
+  if self.ngroups==0 then
+    return nil
+  elseif self.uncontrolled then
+    for i=1,self.ngroups do
+      self:_SpawnWithRoute()
+    end
+    SCHEDULER:New(nil, self._ActivateUncontrolled, {self}, self.activate_delay, self.activate_delta, self.activate_frand)
+  else
+    SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
+  end
   
 end
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+--- Randomly activates an uncontrolled aircraft.
+-- @param #RAT self
+function RAT:_ActivateUncontrolled()
+  env.info(RAT.id.."_ActivateUncontrolled")
+  
+  -- Spawn indices of uncontrolled inactive aircraft. 
+  local idx={}
+  local rat={}
+  -- Number of active aircraft.
+  local nactive=0
+  
+  for spawnindex,ratcraft in pairs(self.ratcraft) do
+    env.info(RAT.id..string.format("Spawnindex = %d, group name = %s, active = %s", spawnindex, ratcraft.group:GetName(), tostring(ratcraft.active)))
+    if ratcraft.active then
+      nactive=nactive+1
+    else
+      table.insert(idx, spawnindex)
+    end
+  end
+  
+  if #idx>0 and nactive<self.activate_max then
+    -- Randomly pick on group, which is activated.
+    local index=idx[math.random(#idx)] --Wrapper.Group#GROUP
+    -- Start aircraft.
+    self:_CommandStartUncontrolled(index)
+  end
+
+end
+
+--- Start uncontrolled aircraft group.
+-- @param #RAT self
+-- @param #number index Spawn index of the ratcraft to be activated.
+function RAT:_CommandStartUncontrolled(index)
+  -- Get group to be activated.
+  local group=self.ratcraft[index].group --Wrapper.Group#GROUP
+  -- Start command.
+  local StartCommand = {id = 'Start', params = {}}
+  -- Activate group.
+  group:SetCommand(StartCommand)
+  -- Set status to active.
+  self.ratcraft[index].active=true
+end
 
 --- Function checks consistency of user input and automatically adjusts parameters if necessary.
 -- @param #RAT self
@@ -1173,10 +1231,30 @@ function RAT:RadioFrequency(frequency)
   self.frequency=frequency
 end
 
---- Spawn aircraft in uncontolled state. Aircraft will only sit at their parking spots. Only for populating airfields. 
+--- Spawn aircraft in uncontrolled state. Aircraft will only sit at their parking spots. Only for populating airfields. 
 -- @param #RAT self
 function RAT:Uncontrolled()
   self.uncontrolled=true
+end
+
+--- Activate uncontrolled aircraft. 
+-- @param #RAT self
+-- @param #number delay Time delay in seconds before (first) aircraft is activated. Default is 1 second.
+-- @param #number delta Time difference in seconds before next aircraft is activated. Default is 1 second.
+-- @param #number frand Factor [0,...,1] for randomization of time difference between aircraft activations. Default is 0, i.e. no randomization.
+-- @param #number maxactivated Maximal numnber of activated aircraft. Absolute maximum will be the number of spawned groups.
+function RAT:ActivateUncontrolled(delay,delta,frand,maxactivated)
+  self.activate_delay=delay or 1
+  self.activate_delta=delta or 1
+  self.activate_frand=frand or 0
+  -- Ensure min delay is one second.
+  self.activate_delay=math.max(self.activate_delay,1)
+  -- Ensure min delta is one second.
+  self.activate_delta=math.max(self.activate_delta,0)
+  -- Ensure frand is in [0,...,1]
+  self.activate_frand=math.max(self.activate_frand,0)
+  self.activate_frand=math.min(self.activate_frand,1)
+  self.activate_max=maxactivated
 end
 
 --- Set radio modulation. Default is AM.
@@ -1483,6 +1561,7 @@ end
 -- @param #string _departure (Optional) Name of departure airbase.
 -- @param #string _destination (Optional) Name of destination airbase.
 -- @param #number _takeoff Takeoff type id.
+-- @return #number Spawn index.
 function RAT:_SpawnWithRoute(_departure, _destination, _takeoff, _landing, _livery, _waypoint)
 
   -- Set takeoff type.
@@ -1524,14 +1603,6 @@ function RAT:_SpawnWithRoute(_departure, _destination, _takeoff, _landing, _live
   else
     livery=nil
   end
-  
---[[
-  -- Use last waypoint of previous flight as initial wp for this one.
-  if _waypoint and takeoff==RAT.wp.air and (self.continuejourney or self.commute) then
-    -- If the other way does not work, we can still try this.
-    waypoints[1]=_waypoint
-  end 
-]]
   
   -- Modify the spawn template to follow the flight plan.
   self:_ModifySpawnTemplate(waypoints, livery)
@@ -1591,6 +1662,9 @@ function RAT:_SpawnWithRoute(_departure, _destination, _takeoff, _landing, _live
   self.ratcraft[self.SpawnIndex].wpholding=WPholding
   self.ratcraft[self.SpawnIndex].wpfinal=WPfinal
   
+  -- Aircraft is active or spawned in uncontrolled state.
+  self.ratcraft[self.SpawnIndex].active=not self.uncontrolled
+  
   -- Livery
   self.ratcraft[self.SpawnIndex].livery=livery
   
@@ -1620,7 +1694,6 @@ function RAT:_SpawnWithRoute(_departure, _destination, _takeoff, _landing, _live
   end
   
   return self.SpawnIndex
-  
 end
 
 
@@ -2849,8 +2922,10 @@ function RAT:Status(message, forID)
         if self.ratcraft[i].despawnme then
           local text=string.format("Flight %s will be despawned NOW!", self.alias)
           self:T(RAT.id..text)
-            -- Despawn old group.
-          self:_Respawn(self.ratcraft[i].group)
+          -- Despawn old group.
+          if not self.norespawn then  
+            self:_Respawn(self.ratcraft[i].group)
+          end
           self:_Despawn(self.ratcraft[i].group)
         end
       end       
@@ -3213,11 +3288,11 @@ end
 -- @param Wrapper.Group#GROUP group Group to be despawned.
 function RAT:_Despawn(group)
   if group ~= nil then
-
+    -- Get spawnindex of group.
     local index=self:GetSpawnIndexFromGroup(group)
     if index ~= nil then
-      --self.ratcraft[index].group:Destroy()
-      self.ratcraft[index].group=nil
+      table.remove(self.ratcraft, index)
+      --self.ratcraft[index].group=nil
       group:Destroy()
 
       -- Decrease group alive counter.
@@ -3938,7 +4013,7 @@ function RAT:_ModifySpawnTemplate(waypoints, livery)
     if SpawnTemplate then
       self:T(SpawnTemplate)
       
-      -- Spawn aircraft in uncontolled state.
+      -- Spawn aircraft in uncontrolled state.
       if self.uncontrolled then
         SpawnTemplate.uncontrolled=true
       end
@@ -4314,81 +4389,214 @@ function RAT:_ATCQueue()
 end
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--- **Functional** - Manage multiple RAT objects.
+--  
+-- ![Banner Image](..\Presentations\RAT\RAT.png)
+-- 
+-- ====
+-- 
+-- The aim of the RAT class is to fill the empty DCS world with randomized air traffic and bring more life to your airports.
+-- 
+-- In particular, it is designed to spawn AI air units at random airports. These units will be assigned a random flight path to another random airport on the map.
+-- 
+-- Even the mission designer will not know where aircraft will be spawned and which route they follow.
+-- 
 -- @module Ratmanager
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 --- RATMANAGER class
+-- @type RATMANAGER
 -- @field #string ClassName Name of the Class.
+-- @field #boolean Debug If true, be more verbose on output in DCS.log file.
 -- @field #table rat Array holding RAT objects etc.
--- @field #rable min Array holding the minimum number of groups present for each RAT object.
--- @field #rable max Array holding the maximum number of groups present for each RAT object.
+-- @field #string name Name (alias) of RAT object.
+-- @field #table alive Number of currently alive groups.
+-- @field #table min Minimum number of RAT groups alive.
 -- @field #number nrat Number of RAT objects.
--- @extends Core.Spawn#SPAWN
+-- @field #number ntot Total number of active RAT groups.
+-- @field #number Tcheck Time interval between checking of alive groups.
+-- @field Core.Scheduler#SCHEDULER manager Scheduler managing the RAT objects.
+-- @field #number managerid Managing scheduler id. 
+-- @extends Core.Base#BASE
 
----# RATMANAGER class, extends @{Spawn#SPAWN}
--- The RAT class implements an easy to use way to randomly fill your map with AI aircraft.
+---# RATMANAGER class, extends @{Base#BASE}
+-- The RATMANAGER class manages spawning of multiple RAT objects.
 --
 -- @field #RATMANAGER
 RATMANAGER={
   ClassName="RATMANAGER",
+  Debug=false,
   rat={},
-  min={},
-  max={},
   name={},
   alive={},
+  min={},
   nrat=0,
+  ntot=nil,
+  Tcheck=30,
+  manager=nil,
+  managerid=nil,
 }
+
+--- Some ID to identify who we are in output of the DCS.log file.
+-- @field #string id
+RATMANAGER.id="RATMANAGER | "
 
 --- Creates a new RATMANAGER object.
 -- @param #RATMANAGER self
+-- @param #number ntot Total number of RAT flights.
 -- @return #RATMANAGER RATMANAGER object
-function RATMANAGER:New()
+function RATMANAGER:New(ntot)
 
-  --local self=BASE:Inherit(self, FSM:New()) -- #RATMANAGER
+  -- Inherit BASE.
   local self=BASE:Inherit(self, BASE:New()) -- #RATMANAGER
+  
+  -- Total number of RAT groups.
+  self.ntot=ntot or 1
+  
+  -- Debug info
+  env.info(string.format("RATMANAGER: Creating manager for %d groups.", ntot))
   
   return self
 end
 
 
---- Adds a RAT object to the RAT manager. Min/Max values specifies the limits how many RAT groups are alive.
+--- Adds a RAT object to the RAT manager. Parameter min specifies the limit how many RAT groups are at least alive.
 -- @param #RATMANAGER self
--- @param #RAT ratobject
--- @param #number min Minimum number of RAT objects that will be spawned.
--- @param #number max Maximum number of RAT objects that will be spawned.
-function RATMANAGER:Add(ratobject, min, max)
+-- @param #RAT ratobject RAT object to be managed.
+-- @param #number min Minimum number of groups for this RAT object.
+function RATMANAGER:Add(ratobject,min)
 
   --Automatic respawning is disabled.
   ratobject.norespawn=true
+  ratobject.f10menu=false
   
+  -- Increase RAT object counter.
   self.nrat=self.nrat+1
   
-  --self.rat[#self.rat+1]={}
   self.rat[self.nrat]=ratobject
   self.alive[self.nrat]=0
   self.name[self.nrat]=ratobject.alias
   self.min[self.nrat]=min
-  self.max[self.nrat]=max
   
+  -- Debug info.
+  env.info(string.format("RATMANAGER: Add ratobject %s with min flights = %d", self.name[self.nrat],self.min[self.nrat]))
+  
+  -- Call spawn to initialize RAT parameters.
   ratobject:Spawn(0)
+end
+
+--- Starts the RAT manager and spawns the initial random number RAT groups for each RAT object.
+-- @param #RATMANAGER self
+-- @param #number delay Time delay in seconds after which the RAT manager is started. Default is 5 seconds.
+function RATMANAGER:Start(delay)
+
+  -- Time delay.
+  local delay=delay or 5
+
+  -- Info text.
+  local text=string.format("RATMANAGER: RAT manager will be started in %d seconds.\n", delay)
+  text=text..string.format("Managed groups:\n")
+  for i=1,self.nrat do
+    text=text..string.format("- %s with min groups %d\n", self.name[i], self.min[i])
+  end
+  text=text..string.format("Constant number of groups %d", self.ntot)
+  env.info(text)
+
+  SCHEDULER:New(nil, self._Start, {self}, delay)
+end
+
+--- Instantly starts the RAT manager and spawns the initial random number RAT groups for each RAT object.
+-- @param #RATMANAGER self
+function RATMANAGER:_Start()
+
+  -- Ensure that ntot is at least sum of min RAT groups.
+  local n=0
+  for i=1,self.nrat do
+    n=n+self.min[i]
+  end
+  self.ntot=math.max(self.ntot, n)
+
+  -- Get randum number of new RAT groups.
+  local N=self:_RollDice(self.nrat, self.ntot, self.min, self.alive)
+  
+  for i=1,self.nrat do
+    for j=1,N[i] do
+      self.rat[i]:_SpawnWithRoute()
+      --SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
+    end
+  end
+  
+  -- Start manager scheduler.
+  self.manager, self.managerid = SCHEDULER:New(nil, self._Manage, {self}, 5, self.Tcheck) --Core.Scheduler#SCHEDULER
+  
+  -- Info
+  local text=string.format("RATMANAGER: Starting RAT manager with scheduler ID %s.\n", self.managerid)
+  env.info(text)
+  
+end
+
+--- Stops the RAT manager.
+-- @param #RATMANAGER self
+-- @param #number delay Delay in seconds, before the manager is stopped.
+function RATMANAGER:Stop(delay)
+  env.info(string.format("RATMANAGER: RAT manager will be stopped in %d seconds.", delay))
+  SCHEDULER:New(nil, self._Stop, {self}, delay)
+end
+
+--- Instantly stops the RAT manager be terminating its scheduler.
+-- @param #RATMANAGER self
+function RATMANAGER:_Stop()
+  env.info(string.format("RATMANAGER: Stopping RAT manager with scheduler ID %s.", self.managerid))
+  self.manager:Stop(self.managerid)
+end
+
+--- Sets the time interval between checks of alive RAT groups. Default is 30 seconds.
+-- @param #RATMANAGER self
+-- @param #number dt Time interval in seconds.
+function RATMANAGER:SetTcheck(dt)
+  self.Tcheck=dt or 30
+end
+
+--- Manager function. Calculating the number of current groups and respawning new groups if necessary.
+-- @param #RATMANAGER self
+function RATMANAGER:_Manage()
+  env.info("RATMANAGER: _Manage")
+
+  -- Count total number of groups.
+  local ntot=self:_Count()
+  
+  local text=string.format("RATMANAGER: Number of alive groups %d. New groups to be spawned %d.", ntot, self.ntot-ntot)
+  env.info(text)
+  
+  -- Get number of necessary spawns.
+  local N=self:_RollDice(self.nrat, self.ntot, self.min, self.alive)
+  
+  for i=1,self.nrat do
+    for j=1,N[i] do
+      self.rat[i]:_SpawnWithRoute()
+      --SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
+    end
+  end
 end
 
 --- Counts the number of alive RAT objects.
 -- @param #RATMANAGER self
 function RATMANAGER:_Count()
+
+  -- Init total counter.
   local ntotal=0
   
   -- Loop over all RAT objects.
   for i=1,self.nrat do
     local n=0
     
-    local ratobject=self.rat --#RAT
+    local ratobject=self.rat[i] --#RAT
     
     -- Loop over the RAT groups of this object.
     for spawnindex,ratcraft in pairs(ratobject.ratcraft) do
       local group=ratcraft.group --Wrapper.Group#GROUP
-      if group:IsAlive() then
-       n=n+1
+      if group and group:IsAlive() then
+        n=n+1
       end
     end
     
@@ -4399,88 +4607,106 @@ function RATMANAGER:_Count()
     ntotal=ntotal+n
     
     -- Some output
-    local text=string.format("Number of groups for %s = %d", self.name[i], n)
-    env.info(text)    
+    local text=string.format("RATMANAGER: Number of alive groups of %s = %d", self.name[i], n)
+    env.info(text)
   end
   
   -- Return grand total.
   return ntotal
 end
 
---- Creates a new RATMANAGER object.
--- @param #RATMANAGER self
-function RATMANAGER:_Manage()
-  local ntot=self:_Count()
-  
-end
-
 --- Rolls the dice for the number of necessary spawns.
 -- @param #RATMANAGER self
 -- @param #number nrat Number of RAT objects.
--- @param #table min Minimum active number of groups for each RAT object.
--- @param #table max Maximum active number of groups for each RAT object.
-function RATMANAGER:_RollDice(nrat,min,max)
-
-  -- Table
-  local N={}
-
-  --- Function calculating the sum of an array.
-  -- @param #table A Array.
-  -- @param #number n Lower index of sum.
-  -- @param #number m Upper index of sum.
-  -- @return summe Sum of elements.
-  local function sum(A,n,m)
+-- @param #number ntot Total number of RAT flights.
+-- @param #table min Minimum number of groups for each RAT object.
+-- @param #table alive Numer of alive groups of each RAT object.
+function RATMANAGER:_RollDice(nrat,ntot,min,alive)
+  
+  -- Calculate sum.
+  local function sum(A,index)
     local summe=0
-    for i=n,m do
+    for _,i in ipairs(index) do
       summe=summe+A[i]
     end
     return summe
-  end
+  end  
   
-  local ntot=sum(max, 1, #max)
-  
+  -- Table of number of groups.
+  local N={}
+  local M={}
+  local P={}
   for i=1,nrat do
     N[#N+1]=0
+    M[#M+1]=math.max(alive[i], min[i])
+    P[#P+1]=math.max(min[i]-alive[i],0)
   end
   
-  --math.randomseed(os.time())
+  -- Min/max group arrays.
+  local mini={}
+  local maxi={}
   
+  -- Arrays.
+  local rattab={}
   for i=1,nrat do
-
-    local maxi=math.min(max[i], ntot-sum(N, 1, i-1)-sum(min, i+1, nrat))
+    table.insert(rattab,i)
+  end
+  local done={}
+  
+  -- Number of new groups to be added.
+  local nnew=ntot
+  for i=1,nrat do
+    nnew=nnew-alive[i]
+  end
+  
+  for i=1,nrat-1 do
     
-    if maxi >= min[i] then
-      N[i]=math.random(min[i], maxi)
+    -- Random entry from .
+    local r=math.random(#rattab)
+    -- Get value
+    local j=rattab[r]
+    
+    table.remove(rattab, r)
+    table.insert(done,j)
+    
+    -- Sum up the number of already distributed groups.
+    local sN=sum(N, done)
+    -- Sum up the minimum number of yet to be distributed groups. 
+    local sP=sum(P, rattab)
+    
+    -- Max number that can be distributed for this object.
+    maxi[j]=nnew-sN-sP
+    
+    -- Min number that should be distributed for this object
+    mini[j]=P[j]
+    
+    -- Random number of new groups for this RAT object.
+    if maxi[j] >= mini[j] then
+      N[j]=math.random(mini[j], maxi[j])
     else
-      N[i]=0
+      N[j]=0
     end
     
-    env.info(string.format("FF i=%d, min=%d, max=%d, N=%d", i, min[i], maxi, N[i]))
+    -- Debug info
+    --env.info(string.format("RATMANAGER: i=%d, alive=%d, min=%d, mini=%d, maxi=%d, add=%d, sumN=%d, sumP=%d", j, alive[j], min[j], mini[j], maxi[j], N[j],sN, sP))
+    
   end
   
-  -- last one (determined by ntot and already distributed ones)
-  --N[nrat]=ntot-sum(N, 1, nrat-1)
- -- env.info(string.format("FF i=%d, min=%d, max=%d, N=%d", nrat, min[nrat], ntot-sum(N, 1, nrat-1), N[nrat]))
+  -- Last RAT object, number of groups is determined from number of already distributed groups and nnew.
+  local j=rattab[1]
+  N[j]=nnew-sum(N, done)
+  mini[j]=nnew-sum(N, done)
+  maxi[j]=nnew-sum(N, done)
+  table.remove(rattab, 1)
+  table.insert(done,j)
   
-  env.info(string.format("FF sum = %d", sum(N, 1, nrat)))
+  -- Debug info
+  for i=1,nrat do
+    env.info(string.format("RATMANAGER: %s: i=%d, alive=%d, min=%d, mini=%d, maxi=%d, add=%d", self.name[i], i, alive[i], min[i], mini[i], maxi[i], N[i]))
+  end
+  env.info(string.format("RATMANAGER: Total # of groups to add = %d", sum(N, done)))
 
+  -- Return number of groups to be spawned.
   return N
-end
-
---- Starts the RAT manager and spawns the RAT objects.
--- @param #RATMANAGER self
-function RATMANAGER:Start()
-
-  -- init number of spawns
-  local N=self:_RollDice(self.nrat, self.min, self.max)
-  
-  
-  for i=1,self.nrat do
-    for j=1,N[i] do
-      self.rat[i]:_SpawnWithRoute()
-      --SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
-    end
-  end
-  
 end
 
