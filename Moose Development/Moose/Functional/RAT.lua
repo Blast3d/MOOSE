@@ -4476,7 +4476,7 @@ function RATMANAGER:New(ntot)
   self.ntot=ntot or 1
   
   -- Debug info
-  env.info(string.format("RATMANAGER: Creating manager for %d groups.", ntot))
+  env.info(string.format(RATMANAGER.id.."Creating manager for %d groups.", ntot))
   
   return self
 end
@@ -4501,7 +4501,9 @@ function RATMANAGER:Add(ratobject,min)
   self.min[self.nrat]=min
   
   -- Debug info.
-  env.info(string.format("RATMANAGER: Add ratobject %s with min flights = %d", self.name[self.nrat],self.min[self.nrat]))
+  if self.Debug then
+    env.info(string.format(RATMANAGER.id.."Add ratobject %s with min flights = %d", self.name[self.nrat],self.min[self.nrat]))
+  end
   
   -- Call spawn to initialize RAT parameters.
   ratobject:Spawn(0)
@@ -4516,14 +4518,15 @@ function RATMANAGER:Start(delay)
   local delay=delay or 5
 
   -- Info text.
-  local text=string.format("RATMANAGER: RAT manager will be started in %d seconds.\n", delay)
+  local text=string.format(RATMANAGER.id.."RAT manager will be started in %d seconds.\n", delay)
   text=text..string.format("Managed groups:\n")
   for i=1,self.nrat do
     text=text..string.format("- %s with min groups %d\n", self.name[i], self.min[i])
   end
-  text=text..string.format("Constant number of groups %d", self.ntot)
+  text=text..string.format("Number of constantly alive groups %d", self.ntot)
   env.info(text)
 
+  -- Start scheduler.
   SCHEDULER:New(nil, self._Start, {self}, delay)
 end
 
@@ -4541,10 +4544,10 @@ function RATMANAGER:_Start()
   -- Get randum number of new RAT groups.
   local N=self:_RollDice(self.nrat, self.ntot, self.min, self.alive)
   
+  -- Loop over all RAT objects and spawn groups.
   for i=1,self.nrat do
     for j=1,N[i] do
       self.rat[i]:_SpawnWithRoute()
-      --SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
     end
   end
   
@@ -4552,23 +4555,24 @@ function RATMANAGER:_Start()
   self.manager, self.managerid = SCHEDULER:New(nil, self._Manage, {self}, 5, self.Tcheck) --Core.Scheduler#SCHEDULER
   
   -- Info
-  local text=string.format("RATMANAGER: Starting RAT manager with scheduler ID %s.\n", self.managerid)
+  local text=string.format(RATMANAGER.id.."Starting RAT manager with scheduler ID %s.", self.managerid)
   env.info(text)
   
 end
 
 --- Stops the RAT manager.
 -- @param #RATMANAGER self
--- @param #number delay Delay in seconds, before the manager is stopped.
+-- @param #number delay Delay in seconds before the manager is stopped. Default is 1 second.
 function RATMANAGER:Stop(delay)
-  env.info(string.format("RATMANAGER: RAT manager will be stopped in %d seconds.", delay))
+  delay=delay or 1
+  env.info(string.format(RATMANAGER.id.."Manager will be stopped in %d seconds.", delay))
   SCHEDULER:New(nil, self._Stop, {self}, delay)
 end
 
---- Instantly stops the RAT manager be terminating its scheduler.
+--- Instantly stops the RAT manager by terminating its scheduler.
 -- @param #RATMANAGER self
 function RATMANAGER:_Stop()
-  env.info(string.format("RATMANAGER: Stopping RAT manager with scheduler ID %s.", self.managerid))
+  env.info(string.format(RATMANAGER.id.."Stopping manager with scheduler ID %s.", self.managerid))
   self.manager:Stop(self.managerid)
 end
 
@@ -4582,21 +4586,23 @@ end
 --- Manager function. Calculating the number of current groups and respawning new groups if necessary.
 -- @param #RATMANAGER self
 function RATMANAGER:_Manage()
-  env.info("RATMANAGER: _Manage")
 
   -- Count total number of groups.
   local ntot=self:_Count()
   
-  local text=string.format("RATMANAGER: Number of alive groups %d. New groups to be spawned %d.", ntot, self.ntot-ntot)
-  env.info(text)
+  -- Debug info.
+  if self.Debug then
+    local text=string.format(RATMANAGER.id.."Number of alive groups %d. New groups to be spawned %d.", ntot, self.ntot-ntot)
+    env.info(text)
+  end
   
   -- Get number of necessary spawns.
   local N=self:_RollDice(self.nrat, self.ntot, self.min, self.alive)
   
+  -- Loop over all RAT objects and spawn new groups if necessary.
   for i=1,self.nrat do
     for j=1,N[i] do
       self.rat[i]:_SpawnWithRoute()
-      --SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
     end
   end
 end
@@ -4628,9 +4634,11 @@ function RATMANAGER:_Count()
     -- Grand total.
     ntotal=ntotal+n
     
-    -- Some output
-    local text=string.format("RATMANAGER: Number of alive groups of %s = %d", self.name[i], n)
-    env.info(text)
+    -- Debug output.
+    if self.Debug then
+      local text=string.format("RATMANAGER: Number of alive groups of %s = %d", self.name[i], n)
+      env.info(text)
+    end
   end
   
   -- Return grand total.
@@ -4642,7 +4650,7 @@ end
 -- @param #number nrat Number of RAT objects.
 -- @param #number ntot Total number of RAT flights.
 -- @param #table min Minimum number of groups for each RAT object.
--- @param #table alive Numer of alive groups of each RAT object.
+-- @param #table alive Number of alive groups of each RAT object.
 function RATMANAGER:_RollDice(nrat,ntot,min,alive)
   
   -- Calculate sum.
@@ -4723,11 +4731,13 @@ function RATMANAGER:_RollDice(nrat,ntot,min,alive)
   table.insert(done,j)
   
   -- Debug info
-  for i=1,nrat do
-    env.info(string.format("RATMANAGER: %s: i=%d, alive=%d, min=%d, mini=%d, maxi=%d, add=%d", self.name[i], i, alive[i], min[i], mini[i], maxi[i], N[i]))
+  if self.Debug then
+    for i=1,nrat do
+      env.info(string.format("RATMANAGER: %s: i=%d, alive=%d, min=%d, mini=%d, maxi=%d, add=%d", self.name[i], i, alive[i], min[i], mini[i], maxi[i], N[i]))
+    end
+    env.info(string.format("RATMANAGER: Total # of groups to add = %d", sum(N, done)))
   end
-  env.info(string.format("RATMANAGER: Total # of groups to add = %d", sum(N, done)))
-
+  
   -- Return number of groups to be spawned.
   return N
 end
