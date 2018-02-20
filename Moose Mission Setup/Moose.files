@@ -46,6 +46,7 @@ Functional/Detection.lua
 Functional/Designate.lua
 Functional/RAT.lua
 Functional/Suppression.lua
+Functional/PseudoATC.lua
 Functional/ZoneGoal.lua
 Functional/ZoneGoalCoalition.lua
 Functional/ZoneCaptureCoalition.lua
