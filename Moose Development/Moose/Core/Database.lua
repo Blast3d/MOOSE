@@ -97,14 +97,14 @@ function DATABASE:New()
   self:HandleEvent( EVENTS.DeleteCargo )
   
   -- Follow alive players and clients
-  --self:HandleEvent( EVENTS.PlayerEnterUnit, self._EventOnPlayerEnterUnit ) -- This is not working anymore!, handling this through the birth event.
+  self:HandleEvent( EVENTS.PlayerEnterUnit, self._EventOnPlayerEnterUnit ) -- This is not working anymore!, handling this through the birth event.
   self:HandleEvent( EVENTS.PlayerLeaveUnit, self._EventOnPlayerLeaveUnit )
   
   self:_RegisterTemplates()
   self:_RegisterGroupsAndUnits()
   self:_RegisterClients()
   self:_RegisterStatics()
-  --self:_RegisterPlayers()
+  self:_RegisterPlayers()
   self:_RegisterAirbases()
 
   self.UNITS_Position = 0

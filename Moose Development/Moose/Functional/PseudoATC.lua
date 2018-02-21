@@ -58,6 +58,7 @@
 -- @field #string ClassName Name of the Class.
 -- @field #boolean Debug If true, print debug info to dcs.log file.
 -- @field #table player Table comprising the player info.
+-- @field #number mdur Duration in seconds how low messages to the player are displayed.
 -- @extends Core.Base#BASE
 
 ---# PSEUDOATC class, extends @{Base#BASE}
@@ -87,19 +88,19 @@ PSEUDOATC={
   Debug=true,
   player={},
   maxairport=9,
+  mdur=30,
+  mrefresh=120,
 }
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
---- Main F10 menu.
--- @field #string MenuF10
-PSEUDOATC.MenuF10=nil
 
 --- RAT unit conversions.
 -- @list unit
 PSEUDOATC.unit={
   hPa2inHg=0.0295299830714,
   hPa2mmHg=0.7500615613030,
+  meter2feet=3.28084,
+  km2nm=0.539957,
 }
 
 --- Some ID to identify who we are in output of the DCS.log file.
@@ -109,40 +110,10 @@ PSEUDOATC.id="PseudoATC | "
 --- PSEUDOATC version.
 -- @field #list
 PSEUDOATC.version={
-  version = "0.1.2",
+  version = "0.2.0",
   print = true,
 }
 
---[[
-local peter={}
-
---- Event handler for suppressed groups.
---@param #PSEUOATC self
---@param #table event Event table info.
-function peter:onEvent(event)
-
-  env.info("peter: Some event occurred. event id = "..event.id)
-  
-  local Tnow=timer.getTime()
-      
-  -- Event Player Entered Unit
-  if event.id == world.event.S_EVENT_PLAYER_ENTER_UNIT then
-  
-    local unit=event.initiator -- Wrapper.Unit#UNIT
-   
-    if unit and unit:isExist() then
-      
-      local name=unit:getName()  
-      env.info(string.format("peter: Some player just entered unit %s.", name))
-      
-    end
-
-  end
-  
-end
-
-world.addEventHandler(peter)
-]]
 
 --- PSEUDOATC contructor.
 -- @param #PSEUDOATC self
@@ -153,12 +124,12 @@ function PSEUDOATC:New()
   local self=BASE:Inherit(self, BASE:New()) -- #PSEUDOATC
   
   -- Debug info
-  env.info(PSEUDOATC.id..string.format("Creating PseudoATC object. PseudoATC version %s",PSEUDOATC.version.version))
+  env.info(PSEUDOATC.id..string.format("Creating PseudoATC object. PseudoATC version %s", PSEUDOATC.version.version))
   
   -- Handle events.
   --self:HandleEvent(EVENTS.PlayerEnterUnit, self._PlayerEntered)
-  --self:HandleEvent(EVENTS.PlayerLeaveUnit, self._PlayerLeft)
-  --self:HandleEvent(EVENTS.PilotDead, self._PlayerLeft)
+  self:HandleEvent(EVENTS.PlayerLeaveUnit, self._PlayerLeft)
+  self:HandleEvent(EVENTS.PilotDead, self._PlayerLeft)
   --self:HandleEvent(EVENTS.Land, self._PlayerLanded)
   --self:HandleEvent(EVENTS.Takeoff, self._PlayerTakeoff)
   
@@ -189,6 +160,8 @@ end
 --@param #PSEUDOATC self
 --@param #table event Event table info.
 function PSEUDOATC:onEvent(event)
+  env.info()
+  self:E(event)
     
   -- Event Player Entered Unit
   if event.id == world.event.S_EVENT_PLAYER_ENTER_UNIT then
@@ -199,8 +172,21 @@ function PSEUDOATC:onEvent(event)
       
       local name=DCSunit:getName()  
       env.info(PSEUDOATC.id..string.format("Some player just entered unit %s", name))
-      local unit=UNIT:FindByName(name)
-      unit:GetGroup()
+            
+      local unit=UNIT:FindByName(name)      
+      if not unit then
+        local client=CLIENT:FindByName(name, '', true)
+        if client then
+          unit=client:GetClientGroupUnit()
+        end
+        --unit=UNIT:Find(DCSunit)
+      end
+      
+      local group=unit:GetGroup()
+      
+      if not group then
+        env.info(PSEUDOATC.id.."ERROR could not find group.")
+      end
       
       self:PlayerEntered(unit)
       
@@ -227,16 +213,19 @@ function PSEUDOATC:PlayerEntered(unit)
   local PlayerName=unit:GetPlayerName()
   local UnitName=unit:GetName()
   
+  env.info(PSEUDOATC.id.."Group ID = "..GID)
+  env.info(PSEUDOATC.id.."Group name = "..GroupName)
+  BASE:E(group)
+  BASE:E(self.player)
+  
+  self.player[GID]={}
   self.player[GID].group=group
+  self.player[GID].unit=unit
   self.player[GID].groupname=GroupName
   self.player[GID].unitname=UnitName
+  self.player[GID].playername=PlayerName
   self.player[GID].waypoints=group:GetTaskRoute()
-  self.player[GID].scheduler={}
-  self.player[GID].schedulerid={}
   
-  -- Array holding all menues for this player.
-  self.player[GID].menu={}
-   
   -- Info message.
   local text=string.format("Player %s entered unit %s of group %s. ID = %d", PlayerName, UnitName, GroupName, GID)
   if self.Debug then
@@ -245,30 +234,49 @@ function PSEUDOATC:PlayerEntered(unit)
   end
   
   -- Create main F10 menu, i.e. "F10/Pseudo ATC"
-  self.player[GID].menu.main=missionCommands.addSubMenu('Pseudo ATC')
+  --self.player[GID].menu.main=missionCommands.addSubMenu('Pseudo ATC')
+  self.player[GID].menu_main=missionCommands.addSubMenuForGroup(GID, "Pseudo ATC")
+    
+  -- Create list of nearby airports.
+  self:LocalAirports(GID)
   
-  -- Create menu for new player.
-  self.CreateMenu(unit)
+  -- Create submenu My Positon.
+  self:MenuAircraft(GID)
+  
+  -- Create submenu airports.
+  self:MenuAirports(GID)
   
   -- Start scheduler to refresh the F10 menues.
-  self.player[GID].scheduler.menu, self.player[GID].schedulerid.menu=SCHEDULER:New(nil,self.MenuRefresh,{self, GID}, 5, 30)
+  self.player[GID].scheduler, self.player[GID].schedulerid=SCHEDULER:New(nil, self.MenuRefresh, {self, GID}, self.mrefresh, self.mrefresh)
  
+  BASE:E(self.player[GID])
 end
 
 --- Function called when a player leaves a unit or dies. 
 -- @param #PSEUDOATC self
 -- @param Core.Event#EVENTDATA EventData
 function PSEUDOATC:_PlayerLeft(EventData)
-  --missionCommands.removeItem(F10menu_ATC)
-  --stop timers
-  --remove arrays.
+
+  local unit=EventData.IniUnit --Wrapper.Unit#UNIT
+  
+  if unit then
+ 
+    local group=unit:GetGroup()
+    local id=group:GetID()
+    
+    -- Stop scheduler for menu updates
+    self.player[id].scheduler:Stop(self.player[id].schedulerid)
+    
+    -- Remove main menu
+    missionCommands.removeItem(self.player[id].menu_main)
+  end               
 end
 
 
 --- Create list of nearby airports sorted by distance to player unit.
 -- @param #PSEUDOATC self
 -- @param #number id Group id of player unit.
-function PSEUDOATC:_LocalAirports(id)
+function PSEUDOATC:LocalAirports(id)
 
   -- Airports table.  
   self.player[id].airports=nil
@@ -306,6 +314,8 @@ function PSEUDOATC:_LocalAirports(id)
   
 end
 
+
+
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- Menu Functions
 
@@ -314,17 +324,23 @@ end
 -- @param #number id Group id of player unit. 
 function PSEUDOATC:MenuRefresh(id)
 
+  if self.Debug then
+    local text=string.format("Refreshing menues for player %s in group %s.", self.player[id].playername, self.player[id].groupname)
+    env.info(PSEUDOATC.id..text)
+    MESSAGE:New(text,30):ToAll()
+  end
+
   -- Clear menu.
   self:MenuClear(id)
   
-  -- create list of airports
-  self:_LocalAirports(id)
+  -- Create list of nearby airports.
+  self:LocalAirports(id)
+    
+  -- Create submenu My Positon.
+  self:MenuAircraft(id)
   
-  -- create submenu airports
+  -- Create submenu airports.
   self:MenuAirports(id)
-  
-  -- create submenu My Positon
-  menu_add_plane(unit)
 end
 
 
@@ -333,16 +349,39 @@ end
 -- @param #number id Group id of player unit. 
 function PSEUDOATC:MenuClear(id)
 
-  if self.player[id].menu.airports then
-    for name,item in pairs(self.player[id].menu.airports) do
+  if self.Debug then
+    local text=string.format("Clearing menues for player %s in group %s.", self.player[id].playername, self.player[id].groupname)
+    env.info(PSEUDOATC.id..text)
+    MESSAGE:New(text,30):ToAll()
+  end
+  
+  BASE:E(self.player[id].menu_airports)
+  
+  if self.player[id].menu_airports then
+    for name,item in pairs(self.player[id].menu_airports) do
     
       if self.Debug then
         env.info(PSEUDOATC.id..string.format("Deleting menu item %s for ID %d", name, id))
+        BASE:E(item)
       end
       
-      missionCommands.removeItemForGroup(id, self.player[id].menu.airports.name)
+      missionCommands.removeItemForGroup(id, self.player[id].menu_airports[name])
+      --missionCommands.removeItemForGroup(id, item)
+    end
+    
+  else
+    if self.Debug then
+      local text=string.format("no airports to clear menues")
+      env.info(PSEUDOATC.id..text)
     end
   end
+ 
+  if self.player[id].menu_aircraft then
+    missionCommands.removeItemForGroup(id, self.player[id].menu_aircraft.main)
+  end
+  
+  self.player[id].menu_airports=nil
+  self.player[id].menu_aircraft=nil
 end
 
 --- Create "F10/Pseudo ATC" menu items "Airport Data".
@@ -350,9 +389,9 @@ end
 -- @param #number id Group id of player unit for which menues are created. 
 function PSEUDOATC:MenuAirports(id)
 
-  self.player[id].menu.airports=nil
-  self.player[id].menu.airports={}
-      
+  -- Table for menu entries.
+  self.player[id].menu_airports={}
+   
   local i=0
   for _,airport in pairs(self.player[id].airports) do
   
@@ -363,17 +402,18 @@ function PSEUDOATC:MenuAirports(id)
     
     local name=airport.name
     local d=airport.distance
-    local pos=AIRBASE:FindByName(n):GetCoordinate()
+    local pos=AIRBASE:FindByName(name):GetCoordinate()
     
     --F10menu_ATC_airports[ID][name] = missionCommands.addSubMenuForGroup(ID, name, F10menu_ATC)
-    self.player[id].menu.airports.name = missionCommands.addSubMenuForGroup(id, name, self.player[id].menu.main)
+    local submenu=missionCommands.addSubMenuForGroup(id, name, self.player[id].menu_main)
+    self.player[id].menu_airports[name]=submenu
     
     -- Create menu reporting commands
-    missionCommands.addCommandForGroup(id, "Request QFE", self.player[id].menu.airports.name, self.ReportPressure, self, id, "QFE", pos, name)
-    missionCommands.addCommandForGroup(id, "Request QNH", self.player[id].menu.airports.name, self.ReportPressure, self, id, "QNH", pos, name)
-    missionCommands.addCommandForGroup(id, "Request Wind", self.player[id].menu.airports.name, self.ReportWind, self, id, pos, name)
-    missionCommands.addCommandForGroup(id, "Request Temperature", self.player[id].menu.airports.name, self.ReportTemperature, self, id, pos, name)
-    missionCommands.addCommandForGroup(id, "Request BR", self.player[id].menu.airports.name, self.ReportBR, self, id, pos, name, self.player[id].unit)
+    missionCommands.addCommandForGroup(id, "Request QFE", submenu, self.ReportPressure, self, id, "QFE", pos, name)
+    missionCommands.addCommandForGroup(id, "Request QNH", submenu, self.ReportPressure, self, id, "QNH", pos, name)
+    missionCommands.addCommandForGroup(id, "Request Wind", submenu, self.ReportWind, self, id, pos, name)
+    missionCommands.addCommandForGroup(id, "Request Temperature", submenu, self.ReportTemperature, self, id, pos, name)
+    missionCommands.addCommandForGroup(id, "Request BR", submenu, self.ReportBR, self, id, pos, name)
     
     if self.Debug then
       env.info(string.format(PSEUDOATC.id.."Creating airport menu item %s for ID %d", name, id))
@@ -386,47 +426,57 @@ end
 -- @param #number id Group id of player unit for which menues are created. 
 function PSEUDOATC:MenuAircraft(id)
 
-  local name="My Aircraft ("..self.player[id].unit:getCallsign()..")"
+  -- Table for menu entries.
+  self.player[id].menu_aircraft={}
+
+  local unit=self.player[id].unit --Wrapper.Unit#UNIT
+  local callsign=unit:GetCallsign()
+  local name=string.format("My Aircraft (%s)", callsign)
+  
+  -- Debug info.
   if self.Debug then
-    env.info(PSEUDOATC.id.."Creating menu item "..name.." for ID "..id)
+    env.info(PSEUDOATC.id..string.format("Creating menu item %s for ID %d", name,id))
   end
   
   -- F10/PseudoATC/My Aircraft (callsign)
-  self.player[id].menu.aircraft = missionCommands.addSubMenuForGroup(id, name, self.player[id].menu.main)
+  self.player[id].menu_aircraft.main = missionCommands.addSubMenuForGroup(id, name, self.player[id].menu_main)
   
   -- F10/PseudoATC/My Aircraft (callsign)/Waypoints
   if #self.player[id].waypoints>0 then
   
     --F10menu_ATC_waypoints[ID]={}
-    self.player[id].menu.waypoints={}
-    self.player[id].menu.waypoints.main=missionCommands.addSubMenuForGroup(id, "Waypoints", self.player[id].menu.aircraft)
+    self.player[id].menu_aircraft_waypoints={}
+    self.player[id].menu_aircraft_waypoints.main=missionCommands.addSubMenuForGroup(id, "Waypoints", self.player[id].menu_aircraft.main)
 
     local j=0    
-    for i,pos in pairs(self.player[id].waypoints) do
+    for i, wp in pairs(self.player[id].waypoints) do
       -- Increase counter
       j=j+1
       
       if j>10 then
         break -- max ten menu entries
       end
+      
+      local pos=COORDINATE:New(wp.x,wp.alt,wp.z)
        
-      local fname="Waypoint "..tostring(i-1).." for "..self.player[id].unit:getCallsign()
-      local pname="Waypoint "..tostring(i-1)
+      local fname=string.format("Waypoint %d for %s", i-1, callsign)
+      local pname=string.format("Waypoint %d", i-1)
       
       -- "F10/PseudoATC/My Aircraft (callsign)/Waypoints/Waypoint X"
-      self.player[id].menu.waypoints.pname=missionCommands.addSubMenuForGroup(id, pname, self.player[id].menu.waypoints.main)
+      local submenu=missionCommands.addSubMenuForGroup(id, pname, self.player[id].menu_aircraft_waypoints.main)
+      self.player[id].menu_aircraft_waypoints.pname=submenu
       
       -- Menu commands for each waypoint "F10/PseudoATC/My Aircraft (callsign)/Waypoints/Waypoint X/<Commands>"
-      missionCommands.addCommandForGroup(id, "Request QFE", self.player[id].menu.waypoints.pname, self.ReportPressure, self, id, "QFE", pos, fname)
-      missionCommands.addCommandForGroup(id, "Request QNH", self.player[id].menu.waypoints.pname, self.ReportPressure, self, id, "QNH", pos, fname)
-      missionCommands.addCommandForGroup(id, "Request Wind", self.player[id].menu.waypoints.pname, self.ReportWind, self, id, pos, fname)
-      missionCommands.addCommandForGroup(id, "Request Temperature", self.player[id].menu.waypoints.pname, self.ReportTemperature, self, id, pos, fname)
-      missionCommands.addCommandForGroup(id, "Request BR", self.player[id].menu.waypoints.pname, self.ReportBR, self, id, pos, fname, self.player[id].unit)
+      missionCommands.addCommandForGroup(id, "Request QFE", submenu, self.ReportPressure, self, id, "QFE", pos, pname)
+      missionCommands.addCommandForGroup(id, "Request QNH", submenu, self.ReportPressure, self, id, "QNH", pos, pname)
+      missionCommands.addCommandForGroup(id, "Request Wind", submenu, self.ReportWind, self, id, pos, pname)
+      missionCommands.addCommandForGroup(id, "Request Temperature", submenu, self.ReportTemperature, self, id, pos, pname)
+      missionCommands.addCommandForGroup(id, "Request BR", submenu, self.ReportBR, self, id, pos, pname)
     end
   end
-  missionCommands.addCommandForGroup(id, "Request current AGL height", self.player[id].menu.aircraft, self.ReportHeight, self, id)
-  --missionCommands.addCommandForGroup(ID, "Report AGL until touchdown", F10menu_ATC_airports[ID][name], start_timer, unit, "reportheight")
-  --missionCommands.addCommandForGroup(ID, "Quit reporting AGL height", F10menu_ATC_airports[ID][name], stop_timer, unit, "reportheight")
+  missionCommands.addCommandForGroup(id, "Request current altitude AGL", self.player[id].menu_aircraft.main, self.ReportHeight, self, id)
+  missionCommands.addCommandForGroup(id, "Report altitude until touchdown", self.player[id].menu_aircraft.main, self.AltidudeStartTimer, self, id)
+  missionCommands.addCommandForGroup(id, "Quit reporting altitude", self.player[id].menu_aircraft.main, self.AltidudeStopTimer, self, id)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------------
@@ -453,11 +503,10 @@ function PSEUDOATC:ReportPressure(id, Qcode, position, location)
   local P_mmHg=P * PSEUDOATC.unit.hPa2mmHg
  
   -- Message text. 
-  local text=string.format("%s at %s: P = %.1f hPa = %.2 inHg = %.1f mmHg.", location, Qcode, P, P_inHg, P_mmHg)
+  local text=string.format("%s at %s: P = %.1f hPa = %.2f inHg = %.1f mmHg.", Qcode, location, P, P_inHg, P_mmHg)
   
-  MESSAGE:New(text, 20):ToGroup(self.player[id].group)
-  --trigger.action.outTextForGroup(ID, message, mlong)
-  
+  -- Send message.
+  MESSAGE:New(text, self.mdur):ToGroup(self.player[id].group)
 end
 
 --- Report temperature.
@@ -483,8 +532,7 @@ function PSEUDOATC:ReportTemperature(id, position, location)
   local text=string.format("Temperature at %s is %s = %s", location, Tc, Tf)
   
   -- Send message to player group.  
-  MESSAGE:New(text, 20):ToGroup(self.player[id].group)
-  --trigger.action.outTextForGroup(ID, message, mlong)
+  MESSAGE:New(text, self.mdur):ToGroup(self.player[id].group)
 end
 
 --- Report wind direction and strength.
@@ -504,11 +552,10 @@ function PSEUDOATC:ReportWind(id, position, location)
   local Ds = string.format('%03d°', Dir)
   
   -- Message text.
-  local text=string.format("Wind from %s at %.1f m/s (%s).", Ds, Vel, Bd)
+  local text=string.format("%s: Wind from %s at %.1f m/s (%s).", location, Ds, Vel, Bd)
     
   -- Send message to player group.  
-  MESSAGE:New(text, 20):ToGroup(self.player[id].group)    
-  --trigger.action.outTextForGroup(ID, message, mlong)
+  MESSAGE:New(text, self.mdur):ToGroup(self.player[id].group)    
 end
 
 --- Report absolute bearing and range form player unit to airport.
@@ -518,66 +565,88 @@ end
 -- @param #string location Name of the location at which the pressure is measured.
 function PSEUDOATC:ReportBR(id, position, location)
 
-  --- Euclidean 2D distance between p and q (height is not considered here)
-  local function distance2D(p,q)
-    return math.sqrt((p.x-q.x)^2+(p.z-q.z)^2)
-  end
+  -- Current coordinates.
+  local unit=self.player[id].unit --Wrapper.Unit#UNIT
+  local coord=unit:GetCoordinate()
   
-  local function NorthCorrectionRadians(TargetVec3)
-    local lat, lon = coord.LOtoLL(TargetVec3)
-    local north_posit = coord.LLtoLO(lat + 1, lon)
-    return math.atan2( north_posit.z - TargetVec3.z, north_posit.x - TargetVec3.x )
-  end
-
-  --- return direction in degrees
-  local function direction2D(p)
-    local dir= NorthCorrectionRadians(p) * 180 / math.pi
-    if dir < 0 then
-      dir = 360 + dir
-    end
-    return dir
-  end
-
-  --- norm of 2D vector
-  local function abs2D(p)
-    return math.sqrt((p.x)^2+(p.z)^2)
-  end
-
-  --- bearing and range from p to q (e.g. p=aircraft, q=airport)
-  local function get_BR(p,q)
-    local v={x=(q.x-p.x), y=(q.y-p.y), z=(q.z-p.z)}
-    local bearing=direction2D(v)
-    local range=abs2D(v)
-    -- return bearing in degrees and range in km
-    return bearing, range/1000
-  end
-
-  local p=get_position(unit)
-  local p=self.player[id].unit:GetCoordinate()
+  -- Direction vector from current position (coord) to target (position).
+  local vec3=coord:GetDirectionVec3(position)
+  local angle=coord:GetAngleDegrees(vec3)
+  local range=coord:Get2DDistance(position)
   
-  local b,r=get_BR(p, q)
-  
-  local bs = string.format( '%03d°', b)
-   
-  local mbr="Bearing "..bs..", Range "..round(r,1).." km = "..round(r*km2nm,1).." NM."
-  
-  local text=string.format("Bearing %s, Range %.1f km = %.1f NM.", Bs, r, r * PSEUDOATC.unit.km2nm)
+  -- Bearing string.
+  local Bs=string.format('%03d°', angle)  
+
+  -- Message text.
+  local text=string.format("%s: Bearing %s, Range %.1f km = %.1f NM.", location, Bs, range/1000, range/1000 * PSEUDOATC.unit.km2nm)
 
   -- Send message to player group.  
-  MESSAGE:New(text, 20):ToGroup(self.player[id].group)      
-  trigger.action.outTextForGroup(ID, message, mlong)
+  MESSAGE:New(text, self.mdur):ToGroup(self.player[id].group)      
 end
 
---- Report height above ground level of player unit.
+--- Report altitude above ground level of player unit.
 -- @param #PSEUDOATC self
 -- @param #number id Group id to the report is delivered.
-function PSEUDOATC:ReportHeight(id)
+-- @param #number dt (Optional) Duration the message is displayed.
+-- @return #number Altuitude above ground.
+function PSEUDOATC:ReportHeight(id, dt)
+
+  local dt = dt or self.mdur
+
+  -- Return height [m] above ground level.
+  local function get_AGL(p)
+    local vec2={x=p.x,y=p.z}
+    local ground=land.getHeight(vec2)
+    local agl=p.y-ground
+    return agl
+  end
+
+  -- Get height AGL.
   local unit=self.player[id].unit --Wrapper.Unit#UNIT
   local position=unit:GetCoordinate()
-  
   local height=get_AGL(position)
-  local message="Your height is "..round(height,0).." m = "..round(height*meter2feet,0).." ft AGL."
-  trigger.action.outTextForGroup(ID, message, mlong)
+  local callsign=unit:GetCallsign()
+  
+  -- Message text.
+  local text=string.format("%s: Your altitude is %d m = %d ft AGL.", callsign, height, height*PSEUDOATC.unit.meter2feet)
+  
+  -- Send message to player group.  
+  MESSAGE:New(text, dt):ToGroup(self.player[id].group)
+  
+  -- Return height
+  return height        
 end
 
---------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+--- Start DCS scheduler function.
+-- @param #PSEUDOATC self.
+-- @param #number id Group id of player unit. 
+function PSEUDOATC:AltidudeStartTimer(id)
+  
+  -- Debug info.
+  if self.Debug then
+    env.info(PSEUDOATC.id..string.format("Starting altitude report timer for player ID %d.", id))
+  end
+  
+  -- Start timer.
+  --self.player[id].altimer=timer.scheduleFunction(self.ReportAltTouchdown, self, id, Tnow+2)
+  self.player[id].altimer, self.player[id].altimerid=SCHEDULER:New(nil, self.ReportHeight, {self, id, 0.1}, 1, 5)
+end
+
+--- Stop/destroy DCS scheduler function for reporting altitude.
+-- @param #PSEUDOATC self.
+-- @param #number id Group id of player unit. 
+function PSEUDOATC:AltidudeStopTimer(id)
+
+  -- Debug info.
+  if self.Debug then
+    env.info(PSEUDOATC.id..string.format("Stopping altitude report timer for player ID %d.", id))
+  end
+  
+  -- Stop timer.
+  --timer.removeFunction(self.player[id].alttimer)
+  self.player[id].altimer:Stop(self.player[id].altimerid)
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
