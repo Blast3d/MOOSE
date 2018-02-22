@@ -7,40 +7,33 @@
 -- 
 -- The pseudo ATC enhances the standard DCS ATC functions.
 -- 
--- In particular, ...
+-- In particular, a menu entry "Pseudo ATC" is created in the special F10 menu.
 -- 
 -- ## Features
 -- 
--- * Report QFE, QNH at nearby airbases. Pressure units: hPa (european aircraft), mmHg (russian aircraft), inHg (american aircraft).
+-- * Report QFE or QNH pressures at nearby airbases.
 -- * Report wind direction and strength at airbases.
--- * Report temperature at airbases.
+-- * Report temperature at airbases
 -- * Report absolute bearing and range to nearest airports.
--- * Report current AGL height of own aircraft.
--- * Upon request, ATC reports height until touchdown. Reporting frequency increases with decreasing height.
+-- * Report current altitude AGL of own aircraft.
+-- * Upon request, ATC reports altitude until touchdown.
 -- * Pressure temperature, wind data and BR for mission waypoints.
 -- * Works with static and dynamic weather.
 -- * All maps supported (Caucasus, NTTR, Normandy, and all future maps).
 -- * Multiplayer ready (?) (I suppose yes, but I don't have a server to test or debug. Jumping from client to client works.)
 --  
---  The PSEUDOATC class creates an entry in the F10 menu which allows to
---  
---  * Create new groups on-the-fly, i.e. at run time within the mission,
---  * Destroy specific groups (e.g. if they get stuck or damaged and block a runway),
---  * Request the status of all RAT aircraft or individual groups,
---  * Place markers at waypoints on the F10 map for each group.
+--  Pressure units: hPa (european aircraft), mmHg (russian aircraft), inHg (american aircraft).
 -- 
 -- ====
 -- 
 -- # Demo Missions
 --
--- ### [RAT Demo Missions](https://github.com/FlightControl-Master/MOOSE_MISSIONS/tree/Release/RAT%20-%20Random%20Air%20Traffic)
 -- ### [ALL Demo Missions pack of the last release](https://github.com/FlightControl-Master/MOOSE_MISSIONS/releases)
 -- 
 -- ====
 -- 
 -- # YouTube Channel
 -- 
--- ### RAT videos are work in progress.
 -- ### [MOOSE YouTube Channel](https://www.youtube.com/playlist?list=PL7ZUrU4zZUl1jirWIo4t4YxqN-HxjqRkL)
 -- 
 -- ===
@@ -65,21 +58,13 @@
 -- The PSEUDOATC class
 -- 
 --
--- ## Airport Selection
+-- ## Usage
 -- 
 -- ![Process](..\Presentations\RAT\RAT_Airport_Selection.png)
 -- 
--- ### Default settings:
+-- ### Coding:
 -- 
--- * By default, aircraft are spawned at airports of their own coalition (blue or red) or neutral airports.
--- * Destination airports are by default also of neutral or of the same coalition as the template group of the spawned aircraft.
--- * Possible destinations are restricted by their distance to the departure airport. The maximal distance depends on the max range of spawned aircraft type and its initial fuel amount.
--- 
--- ### The default behavior can be changed:
--- 
--- * A specific departure and/or destination airport can be chosen.
--- * Valid coalitions can be set, e.g. only red, blue or neutral, all three "colours".
--- * It is possible to start in air within a zone defined in the mission editor or within a zone above an airport of the map.
+-- * Simply write PSEUDOATC:New() anywhere into your script.
 -- 
 -- 
 -- @field #PSEUDOATC
@@ -129,8 +114,8 @@ function PSEUDOATC:New()
   -- Handle events.
   --self:HandleEvent(EVENTS.PlayerEnterUnit, self._PlayerEntered)
   self:HandleEvent(EVENTS.PlayerLeaveUnit, self._PlayerLeft)
-  self:HandleEvent(EVENTS.PilotDead, self._PlayerLeft)
-  --self:HandleEvent(EVENTS.Land, self._PlayerLanded)
+  --self:HandleEvent(EVENTS.PilotDead, self._PlayerLeft)
+  self:HandleEvent(EVENTS.Land, self._PlayerLanded)
   --self:HandleEvent(EVENTS.Takeoff, self._PlayerTakeoff)
   
   -- event handler when players enter or leave (multiplayer)
@@ -140,27 +125,14 @@ function PSEUDOATC:New()
   return self
 end
 
---- Function called when a player enters a unit.
--- @param #PSEUDOATC self
--- @param Core.Event#EVENTDATA EventData
-function PSEUDOATC:_PlayerEntered(EventData)
-  env.info(PSEUDOATC.id.."player entered")
-
-  local unit=EventData.IniUnit --Wrapper.Unit#UNIT
-  
-  if unit then
- 
-    self:PlayerEntered(unit)
- 
-  end               
- 
-end
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- Event Handling
 
 --- Event handler for suppressed groups.
 --@param #PSEUDOATC self
---@param #table event Event table info.
+--@param #table event Event data table. Holds event.id, event.initiator and event.target etc.
 function PSEUDOATC:onEvent(event)
-  env.info()
+  env.info(PSEUDOATC.id.."Event captured by DCS event handler.")
   self:E(event)
     
   -- Event Player Entered Unit
@@ -179,39 +151,112 @@ function PSEUDOATC:onEvent(event)
         if client then
           unit=client:GetClientGroupUnit()
         end
-        --unit=UNIT:Find(DCSunit)
       end
       
+      -- Try to get the group. This sometimes fails depending on SP/MP.
       local group=unit:GetGroup()
       
       if not group then
-        env.info(PSEUDOATC.id.."ERROR could not find group.")
+        env.info(PSEUDOATC.id.."ERROR Could not find player group. Cannot call PlayerEntered function!")
+      else
+        self:PlayerEntered(unit)
       end
       
-      self:PlayerEntered(unit)
-      
     end
-
   end
+  
+  if event.id == world.event.S_EVENT_LAND then
+  
+    local DCSunit=event.initiator
+    local DCSplace=event.place
+  
+    if DCSunit and DCSunit:getGroup() and DCSunit:getPlayerName() then
+      local name=DCSunit:getName()  
+      local unit=UNIT:FindByName(name)      
+      if not unit then
+        local client=CLIENT:FindByName(name, '', true)
+        if client then
+          unit=client:GetClientGroupUnit()
+        end
+      end
+      
+      local base
+      if DCSplace then
+        base=AIRBASE:Find(DCSplace)
+      end
+      
+      self:PlayerLanded(unit, base)
+
+    end
+    
+  end             
   
 end
 
+--[[
 -- get player unit (single player case)
 local PlayerUnit=world.getPlayer()
 if PlayerUnit then
   PSEUDOATC:PlayerEntered(PlayerUnit)
 end
+]]
+
+--- Function called my MOOSE event handler when a player enters a unit.
+-- @param #PSEUDOATC self
+-- @param Core.Event#EVENTDATA EventData
+function PSEUDOATC:_PlayerEntered(EventData)
+  env.info(PSEUDOATC.id.."PlayerEntered event caught my MOOSE.")
+
+  local unit=EventData.IniUnit --Wrapper.Unit#UNIT
+  
+  if unit then
+    self:PlayerEntered(unit)
+  end               
+ 
+end
+
+--- Function called by MOOSE event handler when a player leaves a unit or dies. 
+-- @param #PSEUDOATC self
+-- @param Core.Event#EVENTDATA EventData
+function PSEUDOATC:_PlayerLeft(EventData)
+
+  local unit=EventData.IniUnit --Wrapper.Unit#UNIT
+  
+  if unit then
+    self:PlayerLeft(unit)
+  end
+end
+
+--- Function called by MOOSE event handler when a player landed. 
+-- @param #PSEUDOATC self
+-- @param Core.Event#EVENTDATA EventData
+function PSEUDOATC:_PlayerLanded(EventData)
+
+  local unit=EventData.IniUnit --Wrapper.Unit#UNIT
+  --local place=EventData.
+  
+  if unit then
+    self:PlayerLanded(unit, base)
+  end
+end
+
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------
+-- Menu Functions
 
 --- Function called when a player enters a unit.
 -- @param #PSEUDOATC self
 -- @param Wrapper.Unit#UNIT unit Unit the player entered.
 function PSEUDOATC:PlayerEntered(unit)
+  self:F2({unit=unit})
 
   local group=unit:GetGroup() --Wrapper.Group#GROUP
   local GID=group:GetID()
   local GroupName=group:GetName()
   local PlayerName=unit:GetPlayerName()
   local UnitName=unit:GetName()
+  local CallSign=unit:GetCallsign()
   
   env.info(PSEUDOATC.id.."Group ID = "..GID)
   env.info(PSEUDOATC.id.."Group name = "..GroupName)
@@ -224,6 +269,7 @@ function PSEUDOATC:PlayerEntered(unit)
   self.player[GID].groupname=GroupName
   self.player[GID].unitname=UnitName
   self.player[GID].playername=PlayerName
+  self.player[GID].callsign=CallSign
   self.player[GID].waypoints=group:GetTaskRoute()
   
   -- Info message.
@@ -234,7 +280,6 @@ function PSEUDOATC:PlayerEntered(unit)
   end
   
   -- Create main F10 menu, i.e. "F10/Pseudo ATC"
-  --self.player[GID].menu.main=missionCommands.addSubMenu('Pseudo ATC')
   self.player[GID].menu_main=missionCommands.addSubMenuForGroup(GID, "Pseudo ATC")
     
   -- Create list of nearby airports.
@@ -249,72 +294,71 @@ function PSEUDOATC:PlayerEntered(unit)
   -- Start scheduler to refresh the F10 menues.
   self.player[GID].scheduler, self.player[GID].schedulerid=SCHEDULER:New(nil, self.MenuRefresh, {self, GID}, self.mrefresh, self.mrefresh)
  
-  BASE:E(self.player[GID])
+  self:T2(self.player[GID])
+end
+
+--- Function called when a player has landed.
+-- @param #PSEUDOATC self
+-- @param Wrapper.Unit#UNIT unit Unit of player which has landed.
+-- @param Wrapper.Airbase#AIRBASE base The airbase the player has landed on.
+function PSEUDOATC:PlayerLanded(unit, base)
+  self:F2({unit=unit, base=base})
+  
+  -- Gather some information.
+  local group=unit:GetGroup()
+  local id=group:GetID()
+  local PlayerName=self.player[id].playername
+  local UnitName=self.player[id].playername
+  local BaseName=base:GetName()
+  local GroupName=self.player[id].groupname
+  local CallSign=self.player[id].callsign
+  
+  -- Debug message.
+  if self.Debug then
+    local text=string.format("Player %s (%s) from group %s with ID %d landed at %s", PlayerName, UnitName, GroupName, BaseName)
+    MESSAGE:New(text,30):ToAll()
+    env.info(PSEUDOATC.id..text)
+  end
+  
+  -- Stop altitude reporting timer if its activated.
+  self:AltidudeStopTimer(id)
+  
+  -- Welcome message.
+  if base then
+    local text=string.format("Touchdown! Welcome to %s. Have a nice day!", BaseName)
+    MESSAGE:New(text, self.mdur):ToGroup(group)
+  end
+
 end
 
 --- Function called when a player leaves a unit or dies. 
 -- @param #PSEUDOATC self
--- @param Core.Event#EVENTDATA EventData
-function PSEUDOATC:_PlayerLeft(EventData)
-
-  local unit=EventData.IniUnit --Wrapper.Unit#UNIT
-  
-  if unit then
+-- @param Wrapper.Unit#UNIT unit Player unit which was left.
+function PSEUDOATC:PlayerLeft(unit)
+  self:F2({unit=unit})
  
-    local group=unit:GetGroup()
-    local id=group:GetID()
-    
-    -- Stop scheduler for menu updates
+  -- Get id.
+  local group=unit:GetGroup()
+  local id=group:GetID()
+  
+  -- Debug message.
+  if self.Debug then
+    local text=string.format("Player %s (%s) callsign %s of group %s just left.", self.player[id].playername, self.player[id].unitname, self.player[id].callsign, self.player[id].groupname)
+    MESSAGE:New(text,30):ToAll()
+    env.info(PSEUDOATC.id..text)
+  end
+  
+  -- Stop scheduler for menu updates
+  if self.player[id].schedulerid then
     self.player[id].scheduler:Stop(self.player[id].schedulerid)
-    
-    -- Remove main menu
-    missionCommands.removeItem(self.player[id].menu_main)
-  end               
-end
-
-
---- Create list of nearby airports sorted by distance to player unit.
--- @param #PSEUDOATC self
--- @param #number id Group id of player unit.
-function PSEUDOATC:LocalAirports(id)
-
-  -- Airports table.  
-  self.player[id].airports=nil
-  self.player[id].airports={}
-  
-  -- Current player position.
-  local pos=self.player[id].unit:GetCoordinate()
-  
-  -- Loop over coalitions.
-  for i=0,2 do
-    
-    -- Get all airbases of coalition.
-    local airports=coalition.getAirbases(i)
-    
-    -- Loop over airbases
-    for _,airbase in pairs(airports) do
-    
-      local name=airbase:getName()
-      local q=AIRBASE:FindByName(name):GetCoordinate()
-      local d=q:Get2DDistance(pos)
-      
-      -- Add to table.
-      table.insert(self.player[id].airports, {distance=d, name=name})
-      
-    end
+    self.player[id].scheduler=nil
+    self.player[id].schedulerid=nil
   end
-  
-  --- compare distance (for sorting airports)
-  local function compare(a,b)
-    return a.distance < b.distance
-  end
-  
-  -- Sort airports table w.r.t. distance to player.
-  table.sort(self.player[id].airports, compare)
-  
+    
+  -- Remove main menu
+  missionCommands.removeItem(self.player[id].menu_main)
+               
 end
-
-
 
 -----------------------------------------------------------------------------------------------------------------------------------------
 -- Menu Functions
@@ -430,7 +474,7 @@ function PSEUDOATC:MenuAircraft(id)
   self.player[id].menu_aircraft={}
 
   local unit=self.player[id].unit --Wrapper.Unit#UNIT
-  local callsign=unit:GetCallsign()
+  local callsign=self.player[id].callsign
   local name=string.format("My Aircraft (%s)", callsign)
   
   -- Debug info.
@@ -646,7 +690,55 @@ function PSEUDOATC:AltidudeStopTimer(id)
   
   -- Stop timer.
   --timer.removeFunction(self.player[id].alttimer)
-  self.player[id].altimer:Stop(self.player[id].altimerid)
+  if self.player[id].altimerid then
+    self.player[id].altimer:Stop(self.player[id].altimerid)
+  end
+  
+  self.player[id].altimer=nil
+  self.player[id].altimerid=nil
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Misc
+
+--- Create list of nearby airports sorted by distance to player unit.
+-- @param #PSEUDOATC self
+-- @param #number id Group id of player unit.
+function PSEUDOATC:LocalAirports(id)
+
+  -- Airports table.  
+  self.player[id].airports=nil
+  self.player[id].airports={}
+  
+  -- Current player position.
+  local pos=self.player[id].unit:GetCoordinate()
+  
+  -- Loop over coalitions.
+  for i=0,2 do
+    
+    -- Get all airbases of coalition.
+    local airports=coalition.getAirbases(i)
+    
+    -- Loop over airbases
+    for _,airbase in pairs(airports) do
+    
+      local name=airbase:getName()
+      local q=AIRBASE:FindByName(name):GetCoordinate()
+      local d=q:Get2DDistance(pos)
+      
+      -- Add to table.
+      table.insert(self.player[id].airports, {distance=d, name=name})
+      
+    end
+  end
+  
+  --- compare distance (for sorting airports)
+  local function compare(a,b)
+    return a.distance < b.distance
+  end
+  
+  -- Sort airports table w.r.t. distance to player.
+  table.sort(self.player[id].airports, compare)
+  
+end
+

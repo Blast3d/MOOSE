@@ -132,7 +132,10 @@
 -- @field #boolean radio If true/false disables radio messages from the RAT groups.
 -- @field #number frequency Radio frequency used by the RAT groups.
 -- @field #string modulation Ratio modulation. Either "FM" or "AM".
--- @field #boolean uncontrolled If true aircraft are spawned in uncontrolled state and will only sit on their parking spots.
+-- @field #boolean uncontrolled If true aircraft are spawned in uncontrolled state and will only sit on their parking spots. They can later be activated.
+-- @field #boolean invisible If true aircraft are set to invisible.
+-- @field #boolean indestructible If true, aircraft are spawned as indestructible.
+-- @field #boolean activate_uncontrolled If true, uncontrolled are activated randomly after certain time intervals.
 -- @field #number activate_delay Delay in seconds before first uncontrolled group is activated. Default is 5 seconds.
 -- @field #number activate_delta Time interval in seconds between activation of uncontrolled groups. Default is 5 seconds.
 -- @field #number activate_frand Randomization factor of time interval (activate_delta) between activating uncontrolled groups. Default is 0.
@@ -359,6 +362,9 @@ RAT={
   modulation=nil,           -- Ratio modulation. Either "FM" or "AM".
   actype=nil,               -- Aircraft type set by user. Changes the type of the template group.
   uncontrolled=false,       -- Spawn uncontrolled aircraft.
+  invisible=false,          -- Spawn aircraft as invisible.
+  indestructible=false,     -- Spawn aircraft as indestructible.
+  activate_uncontrolled=false, 
   activate_delay=5,         -- Delay in seconds before first uncontrolled group is activated.
   activate_delta=5,         -- Time interval in seconds between activation of uncontrolled groups.
   activate_frand=0,         -- Randomization factor of time interval (activate_delta) between activating uncontrolled groups.
@@ -703,7 +709,7 @@ function RAT:Spawn(naircraft)
   text=text..string.format("Radio modulation : %s\n", tostring(self.frequency))
   text=text..string.format("Tail # prefix    : %s\n", tostring(self.onboardnum))
   text=text..string.format("Uncontrolled: %s\n", tostring(self.uncontrolled))
-  if self.uncontrolled then
+  if self.uncontrolled and self.activate_uncontrolled then
     text=text..string.format("Uncontrolled delay: %4.1f\n", self.activate_delay)
     text=text..string.format("Uncontrolled delta: %4.1f\n", self.activate_delta)
     text=text..string.format("Uncontrolled frand: %4.1f\n", self.activate_frand)
@@ -755,7 +761,9 @@ function RAT:Spawn(naircraft)
     for i=1,self.ngroups do
       self:_SpawnWithRoute()
     end
-    SCHEDULER:New(nil, self._ActivateUncontrolled, {self}, self.activate_delay, self.activate_delta, self.activate_frand)
+    if self.activate_uncontrolled then
+      SCHEDULER:New(nil, self._ActivateUncontrolled, {self}, self.activate_delay, self.activate_delta, self.activate_frand)
+    end
   else
     SCHEDULER:New(nil, self._SpawnWithRoute, {self}, Tstart, dt, 0.0, Tstop)
   end
@@ -778,17 +786,22 @@ function RAT:_ActivateUncontrolled()
   
   -- Loop over RAT groups and count the active ones.
   for spawnindex,ratcraft in pairs(self.ratcraft) do
+  
     env.info(RAT.id..string.format("Spawnindex = %d, group name = %s, active = %s", spawnindex, ratcraft.group:GetName(), tostring(ratcraft.active)))
+    
     if ratcraft.active then
       nactive=nactive+1
     else
       table.insert(idx, spawnindex)
     end
+    
   end
   
   if #idx>0 and nactive<self.activate_max then
+  
     -- Randomly pick on group, which is activated.
     local index=idx[math.random(#idx)]
+    
     -- Start aircraft.
     self:_CommandStartUncontrolled(index)
   end
@@ -1250,10 +1263,22 @@ function RAT:RadioFrequency(frequency)
   self.frequency=frequency
 end
 
---- Spawn aircraft in uncontrolled state. Aircraft will only sit at their parking spots. Only for populating airfields. 
+--- Spawn aircraft in uncontrolled state. Aircraft will only sit at their parking spots. They can be activated randomly by the RAT:ActivateUncontrolled() function.
 -- @param #RAT self
 function RAT:Uncontrolled()
   self.uncontrolled=true
+end
+
+--- Aircraft are invisible. 
+-- @param #RAT self
+function RAT:Invisible()
+  self.invisible=true
+end
+
+--- Aircraft are indestructible. 
+-- @param #RAT self
+function RAT:Indestructible()
+  self.indestructible=true
 end
 
 --- Activate uncontrolled aircraft. 
@@ -1263,16 +1288,22 @@ end
 -- @param #number frand Factor [0,...,1] for randomization of time difference between aircraft activations. Default is 0, i.e. no randomization.
 -- @param #number maxactivated Maximal numnber of activated aircraft. Absolute maximum will be the number of spawned groups.
 function RAT:ActivateUncontrolled(delay,delta,frand,maxactivated)
+
+  self.activate_uncontrolled=true
   self.activate_delay=delay or 1
   self.activate_delta=delta or 1
   self.activate_frand=frand or 0
+  
   -- Ensure min delay is one second.
   self.activate_delay=math.max(self.activate_delay,1)
+  
   -- Ensure min delta is one second.
   self.activate_delta=math.max(self.activate_delta,0)
+  
   -- Ensure frand is in [0,...,1]
   self.activate_frand=math.max(self.activate_frand,0)
   self.activate_frand=math.min(self.activate_frand,1)
+  
   self.activate_max=maxactivated
 end
 
@@ -1632,7 +1663,7 @@ function RAT:_SpawnWithRoute(_departure, _destination, _takeoff, _landing, _live
   -- Increase group counter.
   self.alive=self.alive+1
   
-  -- ATC is monitoring this flight (if it supposed to land).
+  -- ATC is monitoring this flight (if it is supposed to land).
   if self.ATCswitch and landing==RAT.wp.landing then
     if self.returnzone then
       self:_ATCAddFlight(group:GetName(), departure:GetName())
@@ -2991,10 +3022,14 @@ end
 
 --- Set status of group.
 -- @param #RAT self
+-- @param Wrapper.Group#GROUP group Group.
+-- @param #string status Status of group.
 function RAT:_SetStatus(group, status)
 
   -- Get index from groupname.
   local index=self:GetSpawnIndexFromGroup(group)
+  
+  env.info(RAT.id..string.format("Group %s has status %s, spawnindex = %d", group:GetName(), status, index))
   
   -- Set new status.
   self.ratcraft[index].status=status
@@ -3035,13 +3070,80 @@ function RAT:_OnBirth(EventData)
         self:T(RAT.id..text)
 
         -- Set status.
-        local status
+        local status="unknown in birth"
         if SpawnGroup:InAir() then
           status=RAT.status.EventBirthAir
+        elseif self.uncontrolled then
+          status=RAT.status.Uncontrolled
         else
           status=RAT.status.EventBirth
         end
         self:_SetStatus(SpawnGroup, status)
+               
+        -- Workaround for DCS bug that aircraft are spawned on runway if there are no free parking spots.
+        -- We check the this unit was actually spawned ground and not set to be spawned on the runway.
+        local onrunway=SpawnGroup:IsAboveRunway() and not SpawnGroup:InAir() and not self.takeoff==RAT.wp.runway
+        env.info(RAT.id..string.format("above runway = %s", tostring(SpawnGroup:IsAboveRunway())))
+        env.info(RAT.id..string.format("in air       = %s", tostring(SpawnGroup:InAir())))
+        env.info(RAT.id..string.format("takeoff rwy  = %s", tostring(self.takeoff==RAT.wp.runway)))
+        env.info(RAT.id..string.format("on runway    = %s", tostring(onrunway)))
+        
+        -- Get some info ablout this flight. 
+        local i=self:GetSpawnIndexFromGroup(SpawnGroup)
+        local _departure=self.ratcraft[i].departure:GetName()
+        local _destination=self.ratcraft[i].destination:GetName()
+        local _landing=self.ratcraft[i].landing
+        local _livery=self.ratcraft[i].livery        
+                
+        --BASE:E(ATC_GROUND_CAUCASUS.Airbases[AIRBASE.Caucasus.Batumi].PointsRunways)
+        local pointsrwy
+        env.info("_departure=".._departure)
+        for id,name in pairs(AIRBASE.Caucasus) do
+          BASE:T2({id=id, name=name})
+          if name==_departure then
+            env.info("airbase found "..name)
+            pointsrwy=ATC_GROUND_CAUCASUS.Airbases[AIRBASE.Caucasus.Batumi].PointsRunways
+            BASE:T2({points=pointsrwy})
+          end
+        end
+        
+        local isonrunway=false
+        for PointsRunwayID, PointsRunway in pairs(pointsrwy) do
+          local runway = ZONE_POLYGON_BASE:New("Runway "..PointsRunwayID, PointsRunway)
+          if SpawnGroup:IsCompletelyInZone(runway) then
+            isonrunway=true
+          end
+        end
+        env.info(RAT.id.."Is on runway = "..tostring(isonrunway))
+        
+        --if status==RAT.status.EventBirth and not self.takeoff==RAT.wp.runway then
+        if isonrunway then
+             
+          -- Error message.
+          local text="ERROR: Aircraft was spawned on runway (DCS bug). Aircraft will be despawned immediately!"
+          MESSAGE:New(text,30):ToAll()
+          env.info(RAT.id..text)
+                   
+          -- Despawn the group.
+          self:_Despawn(SpawnGroup)
+          
+          -- Try to respawn the group if there is at least another airport or random airport selection is used.
+          if self.Ndeparture_Airports>=2 or self.random_departure then
+            -- This creates a completely new group.
+            -- Stuff like livery etc from earlier flights (continuejourney, commute) is not taken over.
+            text=string.format("Spawning new aircraft of group %s at (hopefully) another location.", self.alias)
+            MESSAGE:New(text,30):ToAll()
+            env.info(RAT.id..text)
+            self:_SpawnWithRoute()
+          else
+            -- This will respawn the same fight but already in the air.
+            -- We could also try to spawn already on the runway but this might also lead to problems.
+            text=string.format("Spawning new aircraft of group %s in air since no parking slot is available.", self.alias)
+            MESSAGE:New(text,30):ToAll()
+            env.info(RAT.id..text)
+            self:_SpawnWithRoute(_departure, _destination, RAT.wp.air, _landing, _livery)
+          end  
+        end -- end of workaround
         
       end
     end
