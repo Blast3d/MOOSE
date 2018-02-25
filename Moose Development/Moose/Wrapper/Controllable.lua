@@ -2420,6 +2420,27 @@ function CONTROLLABLE:OptionROEWeaponFree()
   return nil
 end
 
+--- Disperse under fire. Only gound units.
+-- @param #CONTROLLABLE self
+-- @param #number time Any positive number representing the dispersal time in seconds. Set 0 (or false) for no disperse.
+-- @return #CONTROLLABLE self
+function CONTROLLABLE:DisperseUnderFire(time)
+  self:F2( { self.ControllableName } )
+
+  local DCSControllable = self:GetDCSObject()
+  if DCSControllable then
+    local Controller = self:_GetController()
+
+    if self:IsGround() then
+      Controller:setOption( AI.Option.GROUND.id.DISPERSE_ON_ATTACK, time)
+    end
+
+    return self
+  end
+
+  return nil
+end
+
 --- Can the CONTROLLABLE ignore enemy fire?
 -- @param #CONTROLLABLE self
 -- @return #boolean

@@ -95,7 +95,7 @@ PSEUDOATC.id="PseudoATC | "
 --- PSEUDOATC version.
 -- @field #list
 PSEUDOATC.version={
-  version = "0.2.0",
+  version = "0.3.0",
   print = true,
 }
 
