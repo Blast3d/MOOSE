@@ -150,17 +150,20 @@ function PSEUDOATC:onEvent(event)
         local client=CLIENT:FindByName(name, '', true)
         if client then
           unit=client:GetClientGroupUnit()
+          
+          -- Try to get the group. This sometimes fails depending on SP/MP.
+          local group=unit:GetGroup()
+      
+          if not group then
+            env.info(PSEUDOATC.id.."ERROR Could not find player group. Cannot call PlayerEntered function!")
+          else
+            self:PlayerEntered(unit)
+          end
+          
         end
       end
       
-      -- Try to get the group. This sometimes fails depending on SP/MP.
-      local group=unit:GetGroup()
-      
-      if not group then
-        env.info(PSEUDOATC.id.."ERROR Could not find player group. Cannot call PlayerEntered function!")
-      else
-        self:PlayerEntered(unit)
-      end
+
       
     end
   end

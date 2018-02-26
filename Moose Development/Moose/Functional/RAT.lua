@@ -3078,7 +3078,9 @@ function RAT:_SetStatus(group, status)
   -- Get index from groupname.
   local index=self:GetSpawnIndexFromGroup(group)
   
-  env.info(RAT.id..string.format("Group %s has status %s, spawnindex = %d", group:GetName(), status, index))
+  if self.Debug or self.reportstatus then
+    env.info(RAT.id..string.format("Group %s has status %s, spawnindex = %d", group:GetName(), status, index))
+  end
   
   -- Set new status.
   self.ratcraft[index].status=status
