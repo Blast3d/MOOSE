@@ -74,11 +74,8 @@ RANGE={
   strafePlayerResults = {},
   bombPlayerResults = {},
   planes = {},
-  bombimpactsmoke=true,
-  bombimpactflare=false,
-  bombhitsmoke=true,
-  strafetargetflare=true,
-  strafehitsmoke=false,
+  smokebombimpact=true,
+  flarebombimpact=false,
 }
 
 --- Some ID to identify who we are in output of the DCS.log file.
@@ -87,19 +84,29 @@ RANGE.id="RANGE | "
 
 --- Range script version.
 -- @field #number id
---RANGE.version=0.1.0
+RANGE.version="0.1.0"
 
 --- RANGE contructor.
 -- @param #RANGE self
+-- @param #string name
 -- @return #RANGE Returns a RANGE object.
-function RANGE:New()
+function RANGE:New(name)
 
   -- Inherit BASE.
   local self=BASE:Inherit(self, BASE:New()) -- #RANGE
   
-  -- Debug info
-  --TODO: add
-  --env.info(RANGE.id..string.format("Creating RANGE object. RANGE version %s", RANGE.version.version))
+  -- Get range name.
+  self.rangename=name or "Practice Range"
+  
+  -- Debug info.
+  local text=string.format("Creating new RANGE object. RANGE script version %s. Range name: %s", RANGE.version, self.rangename)
+  env.info(RANGE.id..text)
+  MESSAGE:New(text, 10):ToAllIf(self.Debug)
+  
+  -- event handler
+  self:HandleEvent(EVENTS.Birth, self._OnBirth1)
+  self:HandleEvent(EVENTS.Hit,   self._OnHit)
+  self:HandleEvent(EVENTS.Shot,  self._OnShot)
   
   -- Return object.
   return self
@@ -107,17 +114,55 @@ end
 
 --- Add a unit as strafe target. For a strafe target hits from guns are counted. 
 -- @param #RANGE self
--- @param Wrapper.Unit#UNIT unit Unit of the strafe target.
--- @param #number boxlength (Optional) Length of the approach box in meters. Default is 3000 m.
+-- @param #table Table of unit names defining the strafe targets. The first target in the list determines the approach zone (heading and box).
+-- @param #number boxlength (Optional) Length of the approach box in meters. Default is 5000 m.
 -- @param #number boxwidth (Optional) Width of the approach box in meters. Default is 1000 m.
 -- @param #number heading (Optional) Approach heading in Degrees. Default is heading of the unit as defined in the mission editor.
 -- @param #boolean inverseheading (Optional) Take inverse heading (heading --> heading - 180 Degrees). Default is false.
 -- @param #number goodpass (Optional) Number of hits for a "good" strafing pass. Default is 20.
--- @param #number foulline (Optional) Foul line distance. Hits from closer than this distance are not counted. Default 0. Realistic 610 m = 2000 ft.
-function RANGE:AddStrafeTargetUnit(unit, boxlength, boxwidth, heading, inverseheading, goodpass, foulline)
+-- @param #number foulline (Optional) Foul line distance. Hits from closer than this distance are not counted. Default 610 m = 2000 ft. Set to 0 for no foul line.
+function RANGE:AddStrafeTarget(unitnames, boxlength, boxwidth, heading, inverseheading, goodpass, foulline)
+  
+  if type(unitnames)=="table" then
+    unitnames=unitnames
+  else
+    -- Create a table.
+    unitnames={unitnames}
+  end
+  self:E(unitnames)
+  
+  -- Make targets
+  local _targets={}
+  local center=nil
+  local ntargets=0
+  
+  for _i,_name in ipairs(unitnames) do
+  
+    env.info(RANGE.id..string.format("Adding strafe target #%d %s", _i, _name))
+    local unit=UNIT:FindByName(_name)
+    
+    if unit then
+      table.insert(_targets, unit)
+      -- Define center as the first unit we find
+      if center==nil then
+        center=unit
+      end
+      ntargets=ntargets+1
+    else
+      local text=string.format("ERROR! Could not find strafe target with name %s.", _name)
+      env.info(RANGE.id..text)
+      MESSAGE:New(text, 10):ToAllIf(self.Debug)
+    end
+    
+  end
+  env.info(RANGE.id..string.format("Center unit is %s.", center:GetName())) 
+
+  -- Approach box dimensions.
+  local l=boxlength or 5000
+  local w=(boxwidth or 1000)/2
   
   -- Heading: either manually entered or automatically taken from unit heading.
-  local heading=heading or unit:GetHeading()
+  local heading=heading or center:GetHeading()
   
   -- Invert the heading since some units point in the "wrong" direction. In particular the strafe pit from 476th range objects.
   if inverseheading ~= nil then
@@ -132,31 +177,26 @@ function RANGE:AddStrafeTargetUnit(unit, boxlength, boxwidth, heading, inversehe
   -- Foule line distance.
   local foulline=foulline or 0
   
-  local center=unit:GetCoordinate()
-  local l=boxlength or 3000
-  local w=(boxwidth or 1000)/2
+  -- Coordinate of the range.
+  local Ccenter=center:GetCoordinate()
 
   -- Points defining the approach area.  
   local p={}
-  p[1]=center
-  p[2]=p[1]:Translate(  w, heading+90)
-  p[3]=p[2]:Translate(  l, heading)
-  p[4]=p[3]:Translate(2*w, heading-90)
-  p[5]=p[4]:Translate( -l, heading)
+  p[#p+1]=Ccenter:Translate(  w, heading+90)
+  p[#p+1]=  p[#p]:Translate(  l, heading)
+  p[#p+1]=  p[#p]:Translate(2*w, heading-90)
+  p[#p+1]=  p[#p]:Translate( -l, heading)
   
-  -- Smoke points.
-  for _,point in pairs(p) do
-    point=point --Core.Point#COORDINATE
-    point:SmokeRed()
-  end
-
   -- Create zone.
-  local zonename="Zone_"..unit:GetName()
-  local zonepolygon=ZONE_POLYGON_BASE:New(zonename, p)
+  local _name=center:GetName()
+  local _polygon=ZONE_POLYGON_BASE:New(_name, p)
   
   -- Add zone to table.
-  table.insert(self.strafeTargets, {name=zonename, polygon=zonepolygon, goodPass=goodpass, targets={unit}, foulline=foulline})
+  table.insert(self.strafeTargets, {name=_name, polygon=_polygon, goodPass=goodpass, targets=_targets, foulline=foulline, smokepoints=p})
   
+  local text=string.format("Adding new strafe target %s with %d targets: heading = %03d, box_L = %.1f, box_W = %.1f, goodpass = %d, foul line = %.1f", _name, ntargets, heading, boxlength, boxwidth, goodpass, foulline)  
+  env.info(RANGE.id..text)
+  MESSAGE:New(text, 10):ToAllIf(self.Debug)
 end
 
 --- Add a unit as bombing target.
@@ -180,14 +220,46 @@ end
 -- @param #RANGE self
 function RANGE:Start()
 
-  -- event handler
-  ---world.addEventHandler(self)
-  --
+  local _count=0
+  local _location=nil
+  for _,_target in pairs(self.bombingTargets) do
+    _count=_count+1
+    --_target.name
+    if _location==nil then
+      _location=_target.point
+    end
+  end
+  self.nbombtargets=_count
   
-  self:HandleEvent(EVENTS.Birth, self._OnBirth)
-  self:HandleEvent(EVENTS.Hit,   self._OnHit)
-  self:HandleEvent(EVENTS.Shot,  self._OnShot)
+  _count=0
+  for _,_target in pairs(self.strafeTargets) do
+    _count=_count+1
+    for _,_unit in pairs(_target.targets) do
+      if _location==nil then
+        _location=_unit:GetCoordinate()
+      end
+    end
+  end
+  self.nstrafetargets=_count
   
+  -- Location of the range. We simply take the first unit/target we find.
+  self.location=_location
+  
+  local text=string.format("Starting RANGE %s. Number of strafe targets = %d. Number of bomb targets = %d.", self.rangename, self.nstrafetargets, self.nbombtargets)
+  env.info(RANGE.id..text)
+  MESSAGE:New(text,10):ToAllIf(self.Debug)
+
+  
+  SCHEDULER:New(nil,self._Start(self), self, 1)
+
+end
+
+--- Start RANGE training.
+-- @param #RANGE self
+function RANGE:_Start()
+
+
+
 end
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -196,14 +268,44 @@ end
 -- @param #RANGE self
 -- @param Core.Event#EVENTDATA EventData
 function RANGE:_OnBirth(EventData)
+  self:E({eventbirth = EventData})
 
   local unit  = EventData.IniUnit
   local group = EventData.IniGroup
   
-  env.info(RANGE.id.."BIRTH unit  name = "..unit:GetName())
-  env.info(RANGE.id.."BITH: group name = "..group:GetName())
+  env.info(RANGE.id.."BIRTH: unit  name = "..unit:GetName())
+  env.info(RANGE.id.."BIRTH: unit  name = "..EventData.IniDCSUnitName)
+  env.info(RANGE.id.."BIRTH: group name = "..group:GetName())
   
-  self:_PlayerEntered(unit)
+  local _unit = Unit.getByName(EventData.IniDCSUnitName)
+  if _unit then
+    env.info("unitname ".._unit:getName())
+  else
+    env.info("blabla ".._unit:getName())
+  end
+  
+  if unit then
+  
+    local id=unit:GetID()
+    local name=unit:GetName()
+    
+    env.info(RANGE.id.."Unit ID   = "..tostring(id))
+    env.info(RANGE.id.."Unit name = "..tostring(name))
+  
+    -- Reset current strafe status.
+    self.strafeStatus[id] = nil
+  
+    -- Add Menu commands.
+    self:addF10Commands(EventData.IniDCSUnitName)
+  
+    if self.planes[id] ~= true then
+  
+        self.planes[id] = true
+  
+        self:checkInZone(EventData.IniDCSUnitName)
+    end
+  
+  end
   
 end
 
@@ -218,9 +320,9 @@ function RANGE:_OnHit(EventData)
   local group  = EventData.IniGroup
   local target = EventData.TgtUnit
   
-  env.info("HIT: Ini unit   name = "..unit:GetName())
-  env.info("HIT: Ini group  name = "..group:GetName())
-  env.info("HIT: Tgt target name = "..group:GetName())
+  env.info(RANGE.id.."HIT: Ini unit   name = "..unit:GetName())
+  env.info(RANGE.id.."HIT: Ini group  name = "..group:GetName())
+  env.info(RANGE.id.."HIT: Tgt target name = "..group:GetName())
   
   local playerPos=unit:GetCoordinate()
   local targetPos=target:GetCoordinate()
@@ -242,9 +344,9 @@ function RANGE:_OnHit(EventData)
         if dist > _currentTarget.zone.foulline then 
           _currentTarget.hits =  _currentTarget.hits + 1
         else
-          local text="RANGE: Invalid hit. Already passed foul line distance."
-          MESSAGE:New(text, 30):ToAll()
-          env.info(text)
+          local text="Invalid hit. Already passed foul line distance."
+          MESSAGE:New(text, 10):ToGroup(unit:GetGroup())
+          env.info(RANGE.id..text)
         end
         
       end
@@ -257,7 +359,7 @@ function RANGE:_OnHit(EventData)
     if _target.name == _event.target:getName() then
       local unit=target.unit --Wrapper.Unit#UNIT
       -- Smoke the unit.
-      unit:SmokeRed()
+      --unit:SmokeRed()
     end
   end
   
@@ -276,15 +378,12 @@ function RANGE:_OnShot(EventData)
   --local _weapon = _event.weapon:getTypeName()
   local _weapon = EventData.Weapon:getTypeName()
   
-  env.info("EVENT SHOT: Ini unit    name = "..unit:GetName())
-  env.info("EVENT SHOT: Ini group   name = "..group:GetName())
-  env.info("EVENT SHOT: Weapon type name = ".._weapon)
+  env.info(RANGE.id.."EVENT SHOT: Ini unit    name = "..unit:GetName())
+  env.info(RANGE.id.."EVENT SHOT: Ini group   name = "..group:GetName())
+  env.info(RANGE.id.."EVENT SHOT: Weapon type name = ".._weapon)
   
   local _weaponStrArray = self:split(_weapon,"%.")
   local _weaponName = _weaponStrArray[#_weaponStrArray]
-  
-
-  
   
   if (string.match(_weapon, "weapons.bombs") or string.match(_weapon, "weapons.nurs")) then
 
@@ -292,7 +391,7 @@ function RANGE:_OnShot(EventData)
     local _ordnance =  EventData.weapon
 
     -- Tracking info and init of last bomb position.
-    env.info("Tracking ".._weapon.." - ".._ordnance:getName())
+    env.info(RANGE.id.."Tracking ".._weapon.." - ".._ordnance:getName())
     local _lastBombPos = {x=0,y=0,z=0}
 
     -- Get unit name.
@@ -383,235 +482,13 @@ function RANGE:_OnShot(EventData)
 end
 
 
---- Range event handler.
--- @param #RANGE self
--- @param #table _event DCS event.
--- @return #boolean
-function RANGE:onEvent(_event)
-
-  env.info("RANGE event")
-  self:E({rangeevent=_event})
-
-  if _event == nil or _event.initiator == nil then
-    return true
-  end
-  
-  if _event.id == world.event.S_EVENT_PLAYER_ENTER_UNIT then
-    env.info("Range event: Player entered unit! Player name = "..tostring(_event.initiator:getPlayerName()))
-  elseif _event.id == world.event.S_EVENT_BIRTH then
-    env.info("Range event: Birtlh! Player name = "..tostring(_event.initiator:getPlayerName()))
-  end
-
-  local playerPos=_event.initiator:getPosition().p
-  local playerName=_event.initiator:getPlayerName()
-  local unitName=_event.initiator:getName()
-  local playerID=_event.initiator:getID()
-  local groupID=self:getGroupId(_event.initiator)
-  
-  env.info(string.format("Player name = %s", tostring(playerName)))
-  env.info(string.format("Unit   name = %s", tostring(unitName)))
-  env.info(string.format("Unit     ID = %s", tostring(playerID)))
-  env.info(string.format("Group    ID = %s", tostring(groupID)))
-
-  if _event.id == 15 then --player entered unit, FF: id=15 is actually birth.
-  
-    env.info("RANGE: event birth")
-
-    -- env.info("Player entered unit")
-    if _event.initiator:getPlayerName() then
-    
-      local id=_event.initiator:getID()
-      local name=_event.initiator:getName()
-      
-      -- Call function to init stuff.
-      --TODO: unit!
-      --self:_PlayerEntered(unit)
-      
-    end
-  end
-  
-  if  _event.id == world.event.S_EVENT_HIT and _event.target  then
-
-    --env.info("HIT! ".._event.target:getName().." with ".._event.weapon:getTypeName())
-    --_event.weapon is currently broken for clients
-    --env.info(_event.initiator:getPlayerName().."HIT! ".._event.target:getName().." with ".._event.weapon:getTypeName())
-    --trigger.action.outText("HIT! ".._event.target:getName().." with ".._event.weapon:getTypeName(),10,false)
-    
-    -- strafeStatus holds the current strafe target the player is flying towards.
-    -- In particular, _currentTarget.zone contains the current self.strafeTargets 
-    local _currentTarget = self.strafeStatus[playerID]
-  
-    if _currentTarget then
-
-      -- Loop over targets (actually we allow only one at the moment.
-      for _,_target in pairs(_currentTarget.zone.targets) do
-      
-        -- Check the the target is the same that was actually hit.
-        if _target:GetName() == _event.target:getName() then
-        
-          -- Get distance between player and target.
-          local dist=self:getDistance(playerPos, _event.target:getPosition().p)
-          
-          if dist>_currentTarget.zone.foulline then 
-            _currentTarget.hits =  _currentTarget.hits + 1
-          else
-            env.info("RANGE: Invalid hit. Already passed foul line distance.")
-          end
-          
-          --TODO: this is for the pcall...
-          --return true           
-        end
-      end
-      
-    end
-    
-    -- Bombing Targets
-    for _,_target in pairs(self.bombingTargets) do
-      -- Check if one of the bomb targets was hit.
-      if _target.name == _event.target:getName() then
-        local unit=target.unit --Wrapper.Unit#UNIT
-        -- Smoke the unit.
-        unit:SmokeRed()
-      end
-    end
-    
-  end
-
-  -- Event that player fired a big weapon.
-  if _event.id == world.event.S_EVENT_SHOT then
-
-    local _weapon = _event.weapon:getTypeName()
-    local _weaponStrArray = self:split(_weapon,"%.")
-  
-    local _weaponName = _weaponStrArray[#_weaponStrArray]
-    
-    -- Altitude of player. Should be greater than min alt.
-    local alt=_event.initiator:getPosition().p.y
-    
-    if (string.match(_weapon, "weapons.bombs") or string.match(_weapon, "weapons.nurs")) then
-
-      -- Weapon
-      local _ordnance =  _event.weapon
-  
-      -- Tracking info and init of last bomb position.
-      env.info("Tracking ".._weapon.." - ".._ordnance:getName())
-      local _lastBombPos = {x=0,y=0,z=0}
-
-      -- Get unit name.
-      local _unitName = _event.initiator:getName()
-      
-      -- Function monitoring the position of a bomb until impact.
-      local function trackBomb(_previousPos)
-
-        local _unit = Unit.getByName(_unitName)
-  
-        -- env.info("Checking...")
-        if _unit ~= nil and _unit:getPlayerName() ~= nil then
-  
-          -- when the pcall returns a failure the weapon has hit
-          local _status,_bombPos =  pcall(
-          function()
-            -- env.info("protected")
-            return _ordnance:getPoint()
-          end)
-  
-          if _status then
-          
-            -- Still in the air. Remember this position.
-            _lastBombPos = {x = _bombPos.x, y = _bombPos.y, z= _bombPos.z }
-    
-            -- Check again in 0.005 seconds.
-            return timer.getTime() + 0.005
-            
-          else
-          
-            -- Bomb did hit the ground.
-            -- Get closet target to last position.
-            local _closetTarget = nil
-            local _distance = nil
-            
-            -- Smoke impact point of bomb.
-            local impactcoord=COORDINATE:NewFromVec3(_lastBombPos)
-            impactcoord:SmokeBlue()
-    
-            -- Loop over defined bombing targets.
-            for _,_targetZone in pairs(self.bombingTargets) do
-    
-              -- Distance between bomb and target.
-              --TODO: define point of target. Currently, this is a coordinate. Should work.
-              local _temp = self:getDistance(_targetZone.point, _lastBombPos)
-    
-              -- Find closest target to last known position of the bomb.
-              if _distance == nil or _temp < _distance then
-                  _distance = _temp
-                  _closetTarget = _targetZone
-              end
-            end
-  
-            --   env.info(_distance.." from ".._closetTarget.name)
-    
-            -- Count if bomb fell less than 1 km away from the target.
-            if _distance < 1000 then
-    
-              -- Init bomb player results.
-              if not self.bombPlayerResults[_unit:getPlayerName()] then
-                self.bombPlayerResults[_unit:getPlayerName()]  = {}
-              end
-    
-              -- Local results.
-              local _results =  self.bombPlayerResults[_unit:getPlayerName()]
-              
-              -- Add to table.
-              table.insert(_results, {name=_closetTarget.name, distance =_distance, weapon = _weaponName })
-  
-              -- Send message to player.
-              local _message = string.format("%s - %i m from bullseye of %s", _unit:getPlayerName(), _distance, _closetTarget.name)
-  
-              --TODO: MOOSE message. Why not send to group?
-              trigger.action.outText(_message, 10, false)
-            end
-    
-          end -- _status
-            
-        end -- end unit ~= nil
-        
-        return  --Terminate the timer (maybe better return nil?)
-      end -- end function bombtrack
-
-      timer.scheduleFunction(trackBomb, nil, timer.getTime() + 1)
-      
-    end --if string.match
-
-  end
-
-end
 
 --- Function called when a player enters a unit.
 -- @param #RANGE self
 -- @param Wrapper.Unit#UNIT unit Unit the player has entered.
 function RANGE:_PlayerEntered(unit)
 
-  if unit then
-  
-    local id=unit:GetID()
-    local name=unit:GetName()
-    
-    env.info(RANGE.id.."Unit ID   = "..tostring(id))
-    env.info(RANGE.id.."Unit name = "..tostring(name))
-  
-    -- reset current status
-    self.strafeStatus[id] = nil
-  
-    self:addF10Commands(name)
-  
-    if self.planes[id] ~= true then
-  
-        self.planes[id] = true
-  
-        self:checkInZone(name)
-    end
-  
-  end
+
 
 end
 
@@ -950,7 +827,8 @@ function RANGE:checkInZone(_unitName)
             -- Init strafe status for this player.
             self.strafeStatus[_unit:getID()] = {hits = 0, zone = _targetZone, time = 1 }
 
-            local _msg = _unit:getPlayerName().." rolling in on ".._targetZone.name
+            -- Rolling in!
+            local _msg=string.format("%s rolling in on %s.", _unit:getPlayerName(), _targetZone.name)
             
             -- TODO: MOOSE message.
             self:displayMessageToGroup(_unit, _msg, 10, true)
@@ -1014,37 +892,136 @@ function RANGE:addF10Commands(_unitName)
   -- Get unit from name.
   local _unit = Unit.getByName(_unitName)
   
-  --TODO: why not check if playername exists?
-  if _unit then
+  self:E(_unit)
   
-    --TODO: convert to MOOSE.
-    --local _group =  mist.DBs.unitsById[tonumber(_unit:getID())]
+  --TODO: why not check if playername exists?
+  --if _unit then
+
+    --local _gid=self:getGroupId(_unit)  
     local unit=UNIT:Find(_unit)
     local group=unit:GetGroup()
     local _gid=group:GetID()
   
-    --if _group  then
-    if group and _gid  then
+    --if _group then
+    if group and _gid then
   
       --local _gid =  _group.groupId
       if not self.addedTo[_gid] then
+      
+        -- Enable switch.
         self.addedTo[_gid] = true
   
-        local _rootPath = missionCommands.addSubMenuForGroup(_gid, "Range")
-  
+        -- Main F10 menu: F10/On the Range
+        local _rootPath = missionCommands.addSubMenuForGroup(_gid, "On the Range")
+        -- Submenu for this range: F10/On the Range/<Range Name>
+        local _rangePath = missionCommands.addSubMenuForGroup(_gid, self.rangename, _rootPath)
+
         --TODO: Convert to MOOSE menu.
-        missionCommands.addCommandForGroup(_gid, "My Strafe results", _rootPath, self.displayMyStrafePitResults, self, _unitName)
-        missionCommands.addCommandForGroup(_gid, "All Strafe results", _rootPath, self.displayStrafePitResults, self, _unitName)
-        missionCommands.addCommandForGroup(_gid, "My Bombing results", _rootPath, self.displayMyBombingResults, self, _unitName)
-        missionCommands.addCommandForGroup(_gid, "All Bombing results", _rootPath, self.displayBombingResults, self, _unitName)
-        missionCommands.addCommandForGroup(_gid, "Reset Stats", _rootPath, self.resetRangeStats, self, _unitName)
+        -- Commands
+        missionCommands.addCommandForGroup(_gid, "Range Information",       _rangePath, self.RangeInfo, self, _unitName)        
+        missionCommands.addCommandForGroup(_gid, "Smoke Strafe Targets",    _rangePath, self.SmokeStrafeTargets, self)
+        missionCommands.addCommandForGroup(_gid, "Smoke Strafe Approaches", _rangePath, self.SmokeStrafeTargetBoxes, self)
+        missionCommands.addCommandForGroup(_gid, "Smoke Bombing Targets",   _rangePath, self.SmokeBombTargets, self)
+        missionCommands.addCommandForGroup(_gid, "My Strafe results",       _rangePath, self.displayMyStrafePitResults, self, _unitName)
+        missionCommands.addCommandForGroup(_gid, "All Strafe results",      _rangePath, self.displayStrafePitResults, self, _unitName)
+        missionCommands.addCommandForGroup(_gid, "My Bombing results",      _rangePath, self.displayMyBombingResults, self, _unitName)
+        missionCommands.addCommandForGroup(_gid, "All Bombing results",     _rangePath, self.displayBombingResults, self, _unitName)
+        missionCommands.addCommandForGroup(_gid, "Reset Stats",             _rangePath, self.resetRangeStats, self, _unitName)
       end
     else
-      env.info("RANGE: ERROR! Could not find group ID.")
-    end
+      env.info(RANGE.id.."ERROR! Could not find group ID.")
+    --end
+    
+    --env.info(RANGE.id.."ERROR! Unit does not exist. Name: ".._unitName)
   end
 
 end
+
+--- Get distance in meters assuming a Flat world.
+-- @param #RANGE self
+function RANGE:SmokeBombTargets()
+  for _,_target in pairs(self.bombingTargets) do
+    local coord = _target.point --Core.Point#COORDINATE
+    coord:SmokeOrange()
+  end
+end
+
+--- Get distance in meters assuming a Flat world.
+-- @param #RANGE self
+function RANGE:SmokeStrafeTargets()
+  for _,_target in pairs(self.strafeTargets) do
+    for _,_unit in pairs(_target.targets) do
+      local coord = _unit:GetCoordinate() --Core.Point#COORDINATE
+      coord:SmokeGreen()
+    end
+  end
+end
+
+--- Smoke approach boxes of strafe targets.
+-- @param #RANGE self
+function RANGE:SmokeStrafeTargetBoxes()
+  for _,_target in pairs(self.strafeTargets) do
+    for _,_point in pairs(_target.smokepoints) do
+      _point:SmokeWhite()
+    end
+  end
+end
+
+--- Report absolute bearing and range form player unit to airport.
+-- @param #RANGE self
+-- @param #string _unitname Name of the player unit.
+function RANGE:RangeInfo(_unitname)
+  env.info(RANGE.id.."RangeInfo for unit ".._unitname)
+
+  local unit=UNIT:FindByName(_unitname)
+  
+  if unit then
+    local group=unit:GetGroup()
+    local _gid=group:GetID()
+    --local _gid=self:getGroupId(unit)
+    
+    env.info(RANGE.id.."RangeInfo for group "..group:GetName().." with ID ".._gid)
+  
+    -- Message text.
+    local text=""
+   
+    -- Current coordinates.
+    local coord=unit:GetCoordinate()
+    
+    if self.location then
+      local position=self.location --Core.Point#COORDINATE
+      local T=position:GetTemperature()
+      local P=position:GetPressure()
+      local Wd,Ws=position:GetWind()
+      
+      -- Get Beaufort wind scale.
+      local Bn,Bd=UTILS.BeaufortScale(Ws)  
+      
+      -- Direction vector from current position (coord) to target (position).
+      local vec3=coord:GetDirectionVec3(position)
+      local angle=coord:GetAngleDegrees(vec3)
+      local range=coord:Get2DDistance(position)
+      
+      -- Bearing string.
+      local Bs=string.format('%03d°', angle)  
+    
+      -- Message text.
+      text=text..string.format("%s\n", self.rangename)
+      text=text..string.format("Temperature %d\n", T)
+      text=text..string.format("QFE pressure %.1f hPa\n", P)
+      text=text..string.format("Wind from %s at %.1f m/s (%s).\n", Wd, Ws, Bd)
+      text=text..string.format("Bearing %s, Range %.1f km\n", Bs, range/1000)
+    else
+      text=string.format("No targets have been defined for range %s.", self.rangename)
+    end
+    
+    -- Send message to player group.  
+    MESSAGE:New(text, 30):ToGroup(group)
+  else
+    env.info(RANGE.id.."ERROR! Could not find unit in RangeInfo! Name = ".._unitname)
+  end      
+end
+
 
 --- Get distance in meters assuming a Flat world.
 -- @param #RANGE self
@@ -1076,7 +1053,5 @@ function RANGE:split(str, sep)
   end
   return result
 end
-
-----------------------------------------------------------------------------------------------------------------------------------------
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
