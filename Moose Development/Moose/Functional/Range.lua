@@ -129,6 +129,8 @@ function RANGE:New(name)
   self:HandleEvent(EVENTS.Hit,   self._OnHit)
   self:HandleEvent(EVENTS.Shot,  self._OnShot)
   
+  self.Eventhandler=world.addEventHandler(self)
+  
   -- Return object.
   return self
 end
@@ -362,6 +364,31 @@ end
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 -- Event Handling
+
+--- General event handler.
+-- @param #RANGE self
+function RANGE:onEvent(Event)
+
+  if Event == nil or Event.initiator == nil then
+    return true
+  end
+
+  local DCSiniunit = Event.initiator
+  local DCStgtunit = Event.target
+  local DCSweapon  = Event.weapon
+
+  local EventData={}
+  
+  EventData.IniUnitName  = Event.initiator:getName()
+  EventData.IniDCSGroup  = Event.initiator:getGroup()
+  EventData.IniGroupName = Event.initiator:getGroup():getName()
+  
+  env.info(RANGE.id..string.format("EVENT: ID        = %d" , tostring(Event.id)))
+  env.info(RANGE.id..string.format("EVENT: Ini unit  = %s" , tostring(EventData.IniUnitName)))
+  env.info(RANGE.id..string.format("EVENT: Ini group = %s" , tostring(EventData.IniGroupName)))
+  
+end
+
 
 --- Range event handler for envent birth.
 -- @param #RANGE self
